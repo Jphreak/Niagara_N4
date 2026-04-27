@@ -1,72 +1,109 @@
 /*
 ================================================================================
-Program: Multi-Location Component Copier (Direct / BQL / CSV) — Niagara N4.15
-Author: F. Lacroix
-Version Tag: v6.2
+Program: Multi-Location Component Copier (Direct / BQL / CSV) - Niagara N4.15
+Author:  F. Lacroix
+Version: v1.00 (First Production Release)
+Date:    2026-04-27
 
-History / Notes:
-  • v1.0  — Inspiration from "Photocopier" by Matt Beatty (23/10/2023)
-  • v2.0  — Added Input Source as CSV
-  • v3.0  — Added All Links Toggle
-  • v4.0  — Added Testing Mode (Dry Run)
-  • v5.0  — Added Output Actions to CSV logging and Console; startup banner
-            (mode-aware). Polished: CSV preflight, dynamic banner
-            (mode/source/results), improved SKIPPED reasons, self-tests
-  • v6.0  — Full rewrite to match LinkCreator look and feel
-            Replaced BRunnableJob background task with synchronous execution
-            Added Application Director logging via java.util.logging
-            Added timestamped status field updates
-            Added logFilePath, previousLogPath, resultsCsvPath as editable Ord slots
-            Added lastRun, lastRunSummary, version as read-only status slots
-            Added log archiving to previousLogPath on each execution
-            Added CSV row progress display in status field
-            Smart header detection - skips header only if first row is not an ORD
-            Unified file append method shared across log and results CSV
-            Removed executeCopy action, displayNames slot and resultsCsvDestination slot
-  • v6.1  — Added skip checks in processCopy():
-            - Destination already contains source component name
-            - Source and destination are the same component
-            - Destination is not a valid BComponent container
-            - BQL row did not resolve to a BComponent
-  • v6.2  — Added Delete mode (deleteComponent boolean slot)
-            Deletes component at destination with same name as source
-            Dry Run works with Delete mode - shows what would be deleted
-            Added total elapsed time to summary line
+Inspiration
+-----------
+Original concept "Photocopier" by Matt Beatty (23/10/2023). This program
+expands that idea with multi-mode destinations, dry-run support, sample-CSV
+generation, and an integrated link-creation phase.
 
-QUICK GUIDE
---------------------------------------
-Purpose: Copy one source component into one or more destination containers
-         and log results to a CSV, log file and Application Director.
-Modes:
-  • Direct — Copy source to a single destination Ord
-  • BQL    — Iterate a BQL query; each result row is a destination
-  • CSV    — Read a CSV file; first column supplies destination ORDs
-Required slots:
-  • componentToCopy (BOrd)      — the component to copy
-  • copyTo (BOrd)               — destination, BQL query, or CSV file path
-  • destinationMode             — Direct=0, BQL=1, CSV=2
-  • keepAllLinks (Boolean)      — preserve incoming links on copy
-  • dryrun (Boolean)            — simulate without making changes
-  • deleteComponent (Boolean)   — delete source-named component from destinations
-  • logFilePath (Ord)           — path to log file
-  • previousLogPath (Ord)       — path to archived previous log
-  • resultsCsvPath (Ord)        — path to results CSV output
-  • lastRun (String)            — read only, timestamp of last execution
-  • lastRunSummary (String)     — read only, summary of last run results
-  • version (String)            — read only, current program version
-High-level flow:
-  1) Archive previous log and initialize fresh results CSV
-  2) Detect mode from destinationMode slot
-  3) Resolve source component and destination(s)
-  4) Copy or delete (or dry-run) each destination and log results
-  5) Write summary line to results CSV and update status slots
+Purpose
+-------
+Copy one source component into one or many destination containers, with an
+optional second pass that creates links to the freshly copied components
+from a separate links CSV. Logs every action to the Application Director,
+a station-rooted log file, and a results CSV.
+
+Modes
+-----
+  Direct  Copy source to a single destination Ord
+  BQL     Iterate a BQL query - each result row is a destination
+  CSV     One destination Ord per row, read from a CSV file
+
+Actions
+-------
+  execute   Run the program in the configured destination mode
+  dryRun    Simulate the run without copying, deleting, or linking
+
+Key features
+------------
+  - keepAllLinks toggle preserves incoming links on the copied component
+  - deleteComponent toggle removes the source-named component from each
+    destination instead of copying
+  - Optional post-copy link phase - if linksCsvPath is set, the program
+    reads a 5-column links CSV (same format as LinkCreator) and creates
+    the listed links after the copy phase finishes
+  - createSampleCsv writes two starter CSVs (copy + links) so the user
+    can edit them in place rather than guessing the format
+  - Auto-archives the active log to a timestamped copy on every run.
+    Archive timestamp reflects the run trigger time.
+  - quickGuide String slot displays the on-station user help next to
+    the configuration slots.
+
+Outputs
+-------
+  status (string)        live timestamped progress and final summary
+  logFilePath            human-readable log of every operation
+  resultsCsvPath         per-copy CSV: timestamp, names, status, etc.
+  Application Director   info / warning / severe lines for ops staff
+
+Quick start
+-----------
+  1) Set componentToCopy and copyTo
+  2) Set destinationMode (Direct / BQL / CSV)
+  3) Optionally set linksCsvPath for a post-copy link phase
+  4) Right-click  >  Actions  >  dryRun   to preview
+  5) Right-click  >  Actions  >  execute  to commit
+  6) Inspect the log file and results CSV for full details
 ================================================================================
 */
 
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("MultiLocationComponentCopier");
 
-private static final String VERSION = "v6.2";
+private static final String VERSION = "v1.00";
+
+// On-station user help -- written into the read-only quickGuide slot
+// during onStart() so it shows up at the bottom of the property sheet.
+private static final String QUICK_GUIDE =
+  "Multi-Location Component Copier " + "v1.00\n" +
+  "=====================================\n" +
+  "\n" +
+  "Modes (destinationMode):\n" +
+  "  Direct  copy source -> one destination\n" +
+  "  BQL     copy source -> each BQL row\n" +
+  "  CSV     copy source -> each destination ord listed in CSV\n" +
+  "\n" +
+  "Actions:\n" +
+  "  Execute - run the configured mode\n" +
+  "  Dry Run - preview without changes\n" +
+  "\n" +
+  "Copy CSV format (one column, header row required):\n" +
+  "  DestinationOrd\n" +
+  "\n" +
+  "Links CSV format (5 cols, same as LinkCreator):\n" +
+  "  BOrd1, Slot1, Direction, BOrd2, Slot2\n" +
+  "\n" +
+  "Steps:\n" +
+  "  1) Set componentToCopy and copyTo\n" +
+  "  2) Choose destinationMode (Direct/BQL/CSV)\n" +
+  "  3) dryRun first to preview\n" +
+  "  4) execute to commit\n" +
+  "  5) check logFilePath and resultsCsvPath for details\n" +
+  "\n" +
+  "  (Optional) \n" +
+  "     1) set createSampleCsv=true and execute to\n" +
+  "        get starter CSVs with example rows\n" +
+  "     2) (Future) linksCsvPath for post-copy link phase \n" +
+  "\n" +
+  "Tips:\n" +
+  "  - keepAllLinks=true preserves incoming links on copy\n" +
+  "  - deleteComponent=true removes source-named components\n" +
+  "    instead of copying. dryRun previews delete-mode too.";
 
 private String now()
 {
@@ -85,18 +122,31 @@ private String resolveLogPath()
     if (ord != null && !ord.isNull()) return ord.toString().trim();
   }
   catch (Exception ignore) {}
-  return "file:^logs/MultiLocationComponentCopier.log".replace("file:^",Sys.getStationHome()+System.getProperty("file.separator"));
+  return "file:^logs/MultiLocationComponentCopier.log";
 }
 
-private String resolveArchivePath()
+// Build a timestamped archive path from the active log path.
+// Inserts "_yyyy-MM-dd_HH-mm-ss" before the file extension, where the
+// timestamp is the current run's trigger time (i.e. when this archive
+// operation runs). This is more reliable than reading the log file's
+// creation time -- on Windows, file tunneling can make the "creation"
+// time stick to a stale value across renames, causing repeated archives
+// to collide on the same filename.
+//   file:^logs/MultiLocationComponentCopier.log
+//     -> file:^logs/MultiLocationComponentCopier_2026-04-27_12-23-25.log
+private String buildTimestampedArchivePath()
 {
-  try
-  {
-    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("previousLogPath");
-    if (ord != null && !ord.isNull()) return ord.toString().trim();
-  }
-  catch (Exception ignore) {}
-  return "file:^logs/MultiLocationComponentCopier_previous.log".replace("file:^",Sys.getStationHome()+System.getProperty("file.separator"));
+  String logPath = resolveLogPath();
+
+  String ts = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss")
+    .format(new java.util.Date());
+
+  int slashIdx = Math.max(logPath.lastIndexOf('/'), logPath.lastIndexOf('\\'));
+  int dotIdx = logPath.lastIndexOf('.');
+
+  if (dotIdx > slashIdx)
+    return logPath.substring(0, dotIdx) + "_" + ts + logPath.substring(dotIdx);
+  return logPath + "_" + ts;
 }
 
 private String resolveResultsCsvPath()
@@ -107,19 +157,16 @@ private String resolveResultsCsvPath()
     if (ord != null && !ord.isNull()) return ord.toString().trim();
   }
   catch (Exception ignore) {}
-  return "file:^logs/MultiLocationComponentCopier_results.csv".replace("file:^",Sys.getStationHome()+System.getProperty("file.separator"));
+  return "file:^logs/MultiLocationComponentCopier_results.csv";
 }
+
+// Set by onDryRun() to make isDryRun() report true for the duration of
+// that one invocation. onExecute() resets it on entry.
+private boolean dryRunActive = false;
 
 private boolean isDryRun()
 {
-  try
-  {
-    Object val = get("dryrun");
-    if (val instanceof javax.baja.sys.BBoolean)
-      return ((javax.baja.sys.BBoolean) val).getBoolean();
-  }
-  catch (Exception ignore) {}
-  return false;
+  return dryRunActive;
 }
 
 private boolean isKeepAllLinks()
@@ -146,46 +193,46 @@ private boolean isDeleteMode()
   return false;
 }
 
-private void updateLastRun()
+private boolean isCreateSampleCsv()
 {
   try
   {
-    java.lang.reflect.Method m = this.getClass().getMethod(
-      "setLastRun", new Class[]{ String.class });
-    m.invoke(this, now());
+    Object val = get("createSampleCsv");
+    if (val instanceof javax.baja.sys.BBoolean)
+      return ((javax.baja.sys.BBoolean) val).getBoolean();
   }
-  catch (Exception ignore)
-  {
-    try
-    {
-      java.lang.reflect.Method m = this.getClass().getMethod(
-        "setLastRun", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(now()));
-    }
-    catch (Exception ignore2) {}
-  }
+  catch (Exception ignore) {}
+  return false;
 }
 
-private void updateLastRunSummary(String summary)
+private String resolveSampleCsvPath()
 {
   try
   {
-    java.lang.reflect.Method m = this.getClass().getMethod(
-      "setLastRunSummary", new Class[]{ String.class });
-    m.invoke(this, summary);
+    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("sampleCsvPath");
+    if (ord != null && !ord.isNull()) return ord.toString().trim();
   }
-  catch (Exception ignore)
-  {
-    try
-    {
-      java.lang.reflect.Method m = this.getClass().getMethod(
-        "setLastRunSummary", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(summary));
-    }
-    catch (Exception ignore2) {}
-  }
+  catch (Exception ignore) {}
+  return "file:^logs/MultiLocationComponentCopier_SAMPLE.csv";
 }
 
+private String resolveLinksCsvPath()
+{
+  try
+  {
+    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("linksCsvPath");
+    if (ord != null && !ord.isNull())
+    {
+      String s = ord.toString().trim();
+      if (s.length() > 0) return s;
+    }
+  }
+  catch (Exception ignore) {}
+  return "";
+}
+
+// Reflection-based setter for the version slot -- avoids a hard
+// compile-time dependency on a generated setVersion() method.
 private void updateVersion()
 {
   try
@@ -206,48 +253,92 @@ private void updateVersion()
   }
 }
 
-// ----------------------------------------------------
-// Single unified file append method
-// ----------------------------------------------------
-private void appendLine(String filePath, String line)
+// Reflection-based setter for the quickGuide slot. Same pattern as
+// updateVersion() -- the slot is a baja:String so we try a String
+// setter first, then a BString setter as a fallback.
+private void updateQuickGuide()
 {
   try
   {
-    javax.baja.naming.BOrd fileOrd =
-      javax.baja.naming.BOrd.make(filePath);
-    javax.baja.file.BIFile bfile =
-      (javax.baja.file.BIFile) fileOrd.resolve().get();
-
-    String existing = "";
+    java.lang.reflect.Method m = this.getClass().getMethod(
+      "setQuickGuide", new Class[]{ String.class });
+    m.invoke(this, QUICK_GUIDE);
+  }
+  catch (Exception ignore)
+  {
     try
     {
-      java.io.InputStream is = bfile.getInputStream();
-      java.io.BufferedReader br = new java.io.BufferedReader(
-        new java.io.InputStreamReader(is));
-      java.lang.StringBuilder sb = new java.lang.StringBuilder();
-      String l;
-      while ((l = br.readLine()) != null)
-      {
-        sb.append(l);
-        sb.append(System.getProperty("line.separator"));
-      }
-      br.close();
-      is.close();
-      existing = sb.toString();
+      java.lang.reflect.Method m = this.getClass().getMethod(
+        "setQuickGuide", new Class[]{ javax.baja.sys.BString.class });
+      m.invoke(this, javax.baja.sys.BString.make(QUICK_GUIDE));
     }
-    catch (Exception ignore) {}
+    catch (Exception ignore2) {}
+  }
+}
 
-    java.io.OutputStream os = bfile.getOutputStream();
-    java.io.PrintWriter pw = new java.io.PrintWriter(
-      new java.io.BufferedWriter(new java.io.OutputStreamWriter(os)));
-    pw.print(existing);
-    pw.println(line);
-    pw.close();
-    os.close();
+// ----------------------------------------------------
+// File path resolution
+// Resolves a Niagara ORD-style path ("file:^logs/foo.log") or a plain
+// relative/absolute path into a real java.io.File rooted at station home.
+// ----------------------------------------------------
+private java.io.File resolveToFile(String pathOrOrd)
+{
+  if (pathOrOrd == null) return null;
+  String p = pathOrOrd.trim();
+  if (p.length() == 0) return null;
+
+  // Strip "file:" scheme if present
+  if (p.startsWith("file:"))
+    p = p.substring(5);
+
+  // "^" in a Niagara ORD means relative to station home
+  boolean stationRelative = false;
+  if (p.startsWith("^"))
+  {
+    stationRelative = true;
+    p = p.substring(1);
+    while (p.startsWith("/") || p.startsWith("\\"))
+      p = p.substring(1);
+  }
+
+  java.io.File f = new java.io.File(p);
+  if (stationRelative || !f.isAbsolute())
+    f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
+
+  return f;
+}
+
+// ----------------------------------------------------
+// Single unified file append method
+// Appends a line to the file, creating the file (and parent folder)
+// if they don't already exist.
+// ----------------------------------------------------
+private void appendLine(String filePath, String line)
+{
+  java.io.BufferedWriter bw = null;
+  try
+  {
+    java.io.File file = resolveToFile(filePath);
+    if (file == null) return;
+
+    // Make sure the parent directory exists
+    java.io.File parent = file.getParentFile();
+    if (parent != null && !parent.exists())
+      parent.mkdirs();
+
+    // append=true creates the file if it does not exist yet
+    bw = new java.io.BufferedWriter(new java.io.OutputStreamWriter(
+      new java.io.FileOutputStream(file, true), "UTF-8"));
+    bw.write(line);
+    bw.newLine();
   }
   catch (Exception e)
   {
     setStatus("[" + now() + "] FILE ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (bw != null) try { bw.close(); } catch (Exception ignore) {}
   }
 }
 
@@ -261,20 +352,29 @@ private void writeToResults(String line)
   appendLine(resolveResultsCsvPath(), line);
 }
 
+// Truncate (or create empty) the file, making the parent folder if needed.
 private void clearFile(String filePath)
 {
+  java.io.FileOutputStream fos = null;
   try
   {
-    javax.baja.naming.BOrd fileOrd =
-      javax.baja.naming.BOrd.make(filePath);
-    javax.baja.file.BIFile bfile =
-      (javax.baja.file.BIFile) fileOrd.resolve().get();
-    java.io.OutputStream os = bfile.getOutputStream();
-    os.close();
+    java.io.File file = resolveToFile(filePath);
+    if (file == null) return;
+
+    java.io.File parent = file.getParentFile();
+    if (parent != null && !parent.exists())
+      parent.mkdirs();
+
+    // append=false truncates if it exists, creates if it doesn't
+    fos = new java.io.FileOutputStream(file, false);
   }
   catch (Exception e)
   {
     setStatus("[" + now() + "] CLEAR ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (fos != null) try { fos.close(); } catch (Exception ignore) {}
   }
 }
 
@@ -283,42 +383,42 @@ private void archiveLogFile()
   try
   {
     String logPath = resolveLogPath();
-    String archivePath = resolveArchivePath();
-
-    javax.baja.naming.BOrd fileOrd =
-      javax.baja.naming.BOrd.make(logPath);
-    javax.baja.file.BIFile bfile =
-      (javax.baja.file.BIFile) fileOrd.resolve().get();
-
-    java.io.InputStream is;
-    try { is = bfile.getInputStream(); is.close(); }
-    catch (Exception e) { return; }
-
-    is = bfile.getInputStream();
-    java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is));
-    java.lang.StringBuilder sb = new java.lang.StringBuilder();
-    String line;
-    while ((line = br.readLine()) != null)
-    {
-      sb.append(line);
-      sb.append(System.getProperty("line.separator"));
-    }
-    br.close();
-    is.close();
-
-    if (sb.toString().trim().isEmpty())
+    java.io.File logFile = resolveToFile(logPath);
+    if (logFile == null || !logFile.exists() || logFile.length() == 0)
       return;
 
-    clearFile(archivePath);
-    String[] lines = sb.toString().split("\n");
-    for (int i = 0; i < lines.length; i++)
+    String archivePath = buildTimestampedArchivePath();
+    java.io.File archiveFile = resolveToFile(archivePath);
+    if (archiveFile == null) return;
+
+    // Make sure the archive's parent folder exists
+    java.io.File parent = archiveFile.getParentFile();
+    if (parent != null && !parent.exists())
+      parent.mkdirs();
+
+    // Atomically rename the active log to the timestamped archive.
+    // If rename fails (e.g. cross-filesystem or destination exists),
+    // fall back to byte copy then truncate the original.
+    if (!logFile.renameTo(archiveFile))
     {
-      String l = lines[i].replace("\r", "").trim();
-      if (l.length() > 0)
-        appendLine(archivePath, l);
+      java.io.FileInputStream  fis = null;
+      java.io.FileOutputStream fos = null;
+      try
+      {
+        fis = new java.io.FileInputStream(logFile);
+        fos = new java.io.FileOutputStream(archiveFile, false);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
+      }
+      finally
+      {
+        if (fis != null) try { fis.close(); } catch (Exception ignore) {}
+        if (fos != null) try { fos.close(); } catch (Exception ignore) {}
+      }
+      // Truncate the original log so the next run starts fresh
+      clearFile(logPath);
     }
-    clearFile(logPath);
   }
   catch (Exception e)
   {
@@ -338,17 +438,20 @@ private void initResultsCsv()
     "Status,Message,Mode,KeepAllLinks,DurationMs");
 }
 
+// Compact summary row: "Total,<summary text>" -- two fields, no
+// padding commas. The leading blank line keeps the visual gap
+// between per-copy rows and the summary when opened in Excel.
 private void writeResultsSummary(
   int copied, int skipped, int failed, int dryrun,
   int deleted, long totalMs)
 {
   appendLine(resolveResultsCsvPath(), "");
-  writeToResults("Total,,,,,Copied:" + copied +
+  writeToResults("Total,Copied:" + copied +
     " Skipped:" + skipped +
     " Failed:" + failed +
     " DryRun:" + dryrun +
     " Deleted:" + deleted +
-    " TotalTime:" + totalMs + "ms,,,");
+    " TotalTime:" + totalMs + "ms");
 }
 
 private String csvEscape(String s)
@@ -515,8 +618,10 @@ private String processCopy(
     // Check if component with source name exists at destination
     if (dst.getSlot(srcName) == null)
     {
-      String detail = "SKIPPED (delete): " + srcName +
-        " not found at destination " + dstName;
+      boolean dry = isDryRun();
+      String detail = (dry ? "DRYRUN (delete): would skip - "
+                           : "SKIPPED (delete): ") +
+        srcName + " not found at destination " + dstName;
       setStatus("[" + now() + "] " + detail);
       log.warning("[MultiLocationComponentCopier] " + detail);
       writeToLog(detail);
@@ -524,16 +629,18 @@ private String processCopy(
         csvEscape(now()) + "," +
         csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
         csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
-        "SKIPPED,Component not found at destination," +
+        (dry ? "DRYRUN,Would skip - component not found at destination"
+             : "SKIPPED,Component not found at destination") + "," +
         csvEscape(mode) + "," +
-        csvEscape(Boolean.toString(isKeepAllLinks())) + ",0");
-      return "SKIPPED";
+        csvEscape(Boolean.toString(isKeepAllLinks())) + ",0.000");
+      return dry ? "DRYRUN" : "SKIPPED";
     }
 
     // Dry run in delete mode
     if (isDryRun())
     {
-      long durMs = (System.nanoTime() - t0) / 1000000L;
+      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
       String detail = "DRYRUN (delete): would remove " + srcName +
         " from " + dstName;
       setStatus("[" + now() + "] " + detail);
@@ -546,7 +653,7 @@ private String processCopy(
         "DRYRUN,Would delete," +
         csvEscape(mode) + "," +
         csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
-        durMs);
+        durStr);
       return "DRYRUN";
     }
 
@@ -554,9 +661,10 @@ private String processCopy(
     try
     {
       dst.remove(srcName);
-      long durMs = (System.nanoTime() - t0) / 1000000L;
+      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
       String detail = "DELETED: " + srcName + " from " + dstName +
-        " (" + durMs + "ms)";
+        " (" + durStr + "ms)";
       setStatus("[" + now() + "] " + detail);
       log.info("[MultiLocationComponentCopier] " + detail);
       writeToLog(detail);
@@ -567,12 +675,13 @@ private String processCopy(
         "DELETED,," +
         csvEscape(mode) + "," +
         csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
-        durMs);
+        durStr);
       return "DELETED";
     }
     catch (Exception e)
     {
-      long durMs = (System.nanoTime() - t0) / 1000000L;
+      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
       String detail = "FAILED (delete): " + srcName +
         " from " + dstName + " - " + e.getMessage();
       setStatus("[" + now() + "] " + detail);
@@ -585,7 +694,7 @@ private String processCopy(
         "FAILED," + csvEscape(e.getMessage()) + "," +
         csvEscape(mode) + "," +
         csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
-        durMs);
+        durStr);
       return "FAILED";
     }
   }
@@ -597,7 +706,10 @@ private String processCopy(
   // 1. Source and destination are the same component
   if (srcPath.equals(dstPath))
   {
-    String detail = "SKIPPED: source and destination are the same - " + srcName;
+    boolean dry = isDryRun();
+    String detail = (dry ? "DRYRUN: would skip - source and destination are the same"
+                         : "SKIPPED: source and destination are the same") +
+      " - " + srcName;
     setStatus("[" + now() + "] " + detail);
     log.warning("[MultiLocationComponentCopier] " + detail);
     writeToLog(detail);
@@ -605,17 +717,20 @@ private String processCopy(
       csvEscape(now()) + "," +
       csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
       csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
-      "SKIPPED,Source and destination are the same," +
+      (dry ? "DRYRUN,Would skip - source and destination are the same"
+           : "SKIPPED,Source and destination are the same") + "," +
       csvEscape(mode) + "," +
-      csvEscape(Boolean.toString(isKeepAllLinks())) + ",0");
-    return "SKIPPED";
+      csvEscape(Boolean.toString(isKeepAllLinks())) + ",0.000");
+    return dry ? "DRYRUN" : "SKIPPED";
   }
 
   // 2. Destination already contains a component with the same name
   if (dst.getSlot(srcName) != null)
   {
-    String detail = "SKIPPED: " + dstName +
-      " already contains a component named " + srcName;
+    boolean dry = isDryRun();
+    String detail = (dry ? "DRYRUN: would skip - "
+                         : "SKIPPED: ") +
+      dstName + " already contains a component named " + srcName;
     setStatus("[" + now() + "] " + detail);
     log.warning("[MultiLocationComponentCopier] " + detail);
     writeToLog(detail);
@@ -623,16 +738,19 @@ private String processCopy(
       csvEscape(now()) + "," +
       csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
       csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
-      "SKIPPED,Component already exists at destination," +
+      (dry ? "DRYRUN,Would skip - component already exists at destination"
+           : "SKIPPED,Component already exists at destination") + "," +
       csvEscape(mode) + "," +
-      csvEscape(Boolean.toString(isKeepAllLinks())) + ",0");
-    return "SKIPPED";
+      csvEscape(Boolean.toString(isKeepAllLinks())) + ",0.000");
+    return dry ? "DRYRUN" : "SKIPPED";
   }
 
   // 3. Destination slot path is empty
   if (dstPath == null || dstPath.trim().isEmpty())
   {
-    String detail = "SKIPPED: destination is not a valid container";
+    boolean dry = isDryRun();
+    String detail = dry ? "DRYRUN: would skip - destination is not a valid container"
+                        : "SKIPPED: destination is not a valid container";
     setStatus("[" + now() + "] " + detail);
     log.warning("[MultiLocationComponentCopier] " + detail);
     writeToLog(detail);
@@ -640,10 +758,11 @@ private String processCopy(
       csvEscape(now()) + "," +
       csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
       csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
-      "SKIPPED,Destination is not a valid container," +
+      (dry ? "DRYRUN,Would skip - destination is not a valid container"
+           : "SKIPPED,Destination is not a valid container") + "," +
       csvEscape(mode) + "," +
-      csvEscape(Boolean.toString(isKeepAllLinks())) + ",0");
-    return "SKIPPED";
+      csvEscape(Boolean.toString(isKeepAllLinks())) + ",0.000");
+    return dry ? "DRYRUN" : "SKIPPED";
   }
 
   // ----------------------------------------------------
@@ -651,7 +770,8 @@ private String processCopy(
   // ----------------------------------------------------
   if (isDryRun())
   {
-    long durMs = (System.nanoTime() - t0) / 1000000L;
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
     String detail = "DRYRUN: would copy " + srcName + " -> " + dstName;
     setStatus("[" + now() + "] " + detail);
     log.info("[MultiLocationComponentCopier] " + detail);
@@ -663,7 +783,7 @@ private String processCopy(
       "DRYRUN,Would copy," +
       csvEscape(mode) + "," +
       csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
-      durMs);
+      durStr);
     return "DRYRUN";
   }
 
@@ -676,9 +796,10 @@ private String processCopy(
     Mark mark = new Mark(src);
     mark.copyTo(dst, params, null);
 
-    long durMs = (System.nanoTime() - t0) / 1000000L;
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
     String detail = "COPIED: " + srcName + " -> " + dstName +
-      " (" + durMs + "ms)";
+      " (" + durStr + "ms)";
     setStatus("[" + now() + "] " + detail);
     log.info("[MultiLocationComponentCopier] SUCCESS - " + detail);
     writeToLog("SUCCESS - " + detail);
@@ -689,12 +810,13 @@ private String processCopy(
       "COPIED,," +
       csvEscape(mode) + "," +
       csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
-      durMs);
+      durStr);
     return "COPIED";
   }
   catch (Exception e)
   {
-    long durMs = (System.nanoTime() - t0) / 1000000L;
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
     String detail = "FAILED: " + srcName + " -> " + dstName +
       " - " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
@@ -707,9 +829,212 @@ private String processCopy(
       "FAILED," + csvEscape(e.getMessage()) + "," +
       csvEscape(mode) + "," +
       csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
-      durMs);
+      durStr);
     return "FAILED";
   }
+}
+
+// ----------------------------------------------------
+// Sample CSVs - emit two self-documenting starter files:
+// one for copy-mode destinations, one for the post-copy links CSV.
+// ----------------------------------------------------
+private String deriveLinksSamplePath(String copySamplePath)
+{
+  if (copySamplePath == null) return "";
+  int slashIdx = Math.max(
+    copySamplePath.lastIndexOf('/'), copySamplePath.lastIndexOf('\\'));
+  int dotIdx = copySamplePath.lastIndexOf('.');
+  if (dotIdx > slashIdx)
+    return copySamplePath.substring(0, dotIdx) + "_links" +
+      copySamplePath.substring(dotIdx);
+  return copySamplePath + "_links";
+}
+
+private void writeSampleCsvs()
+{
+  // ---- Copy-mode sample (one column: destination ORDs) ----
+  String copyPath = resolveSampleCsvPath();
+  clearFile(copyPath);
+  appendLine(copyPath,
+    "DestinationOrd (one ORD per row; container that will receive the copy)");
+  appendLine(copyPath, "station:|slot:/Drivers/Site1/Floor1/Zone1");
+  appendLine(copyPath, "station:|slot:/Drivers/Site1/Floor1/Zone2");
+  appendLine(copyPath, "slot:/Drivers/Site1/Floor2/Zone1");
+  appendLine(copyPath, "slot:/Drivers/Site2/Floor1/Lobby");
+  writeToLog("Sample copy CSV written to: " + copyPath);
+
+  // ---- Links sample (5 columns, same format as LinkCreator) ----
+  String linksPath = deriveLinksSamplePath(copyPath);
+  clearFile(linksPath);
+  appendLine(linksPath,
+    "BOrd1 (source if Direction is '>'),Slot1," +
+    "Direction (> sends 1->2; < sends 2->1)," +
+    "BOrd2 (target if Direction is '>'),Slot2");
+  appendLine(linksPath,
+    "station:|slot:/Drivers/Sensors/TempSensor1,Out,>," +
+    "station:|slot:/Drivers/Site1/Floor1/Zone1/CopiedComponent,TempIn");
+  appendLine(linksPath,
+    "station:|slot:/Drivers/Sensors/TempSensor2,Out,>," +
+    "station:|slot:/Drivers/Site1/Floor1/Zone2/CopiedComponent,TempIn");
+  appendLine(linksPath,
+    "slot:/Drivers/Site1/Floor1/Zone1/CopiedComponent,Output,<," +
+    "slot:/Drivers/Site1/Floor1/Zone1/Damper,Command");
+  writeToLog("Sample links CSV written to: " + linksPath);
+
+  log.info("[MultiLocationComponentCopier] Sample CSVs written: " +
+    copyPath + " and " + linksPath);
+}
+
+// ----------------------------------------------------
+// Link creation (post-copy) - same format as LinkCreator CSV
+// 5 cols: BOrd1, Slot1, Direction (> or <), BOrd2, Slot2
+// ----------------------------------------------------
+private String buildLinkName(
+  javax.baja.sys.BComponent srcComp, String srcSlotStr, String tgtSlotStr)
+{
+  String srcPath = srcComp.getSlotPath().toString();
+  int pathHash = Math.abs(srcPath.hashCode()) % 10000;
+  return "link_" + srcComp.getName() + "_" + srcSlotStr +
+    "_to_" + tgtSlotStr + "_" + pathHash;
+}
+
+// Single link result: LINKED / SKIPPED / ERROR / DRYRUN
+private String processLinkRow(
+  javax.baja.sys.BComponent srcComp, String srcSlotStr,
+  javax.baja.sys.BComponent tgtComp, String tgtSlotStr)
+{
+  try
+  {
+    String linkName = buildLinkName(srcComp, srcSlotStr, tgtSlotStr);
+
+    if (tgtComp.getSlot(linkName) != null)
+    {
+      boolean dry = isDryRun();
+      writeToLog((dry ? "LINK DRYRUN: would skip - already exists --> "
+                      : "LINK SKIPPED: already exists --> ") +
+        srcComp.getName() + "[" + srcSlotStr + "] -> " +
+        tgtComp.getName() + "[" + tgtSlotStr + "]");
+      return dry ? "DRYRUN" : "SKIPPED";
+    }
+
+    if (isDryRun())
+    {
+      writeToLog("LINK DRYRUN: would link --> " +
+        srcComp.getName() + "[" + srcSlotStr + "] -> " +
+        tgtComp.getName() + "[" + tgtSlotStr + "]");
+      return "DRYRUN";
+    }
+
+    String srcHandle = srcComp.getHandle().toString();
+    javax.baja.naming.BOrd srcHandleOrd =
+      javax.baja.naming.BOrd.make("h:" + srcHandle);
+    javax.baja.sys.BLink newLink =
+      new javax.baja.sys.BLink(srcHandleOrd, srcSlotStr, tgtSlotStr, true);
+    tgtComp.add(linkName, newLink, null);
+
+    writeToLog("LINKED: " + srcComp.getName() + "[" + srcSlotStr +
+      "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "]");
+    return "LINKED";
+  }
+  catch (Exception e)
+  {
+    writeToLog("LINK ERROR: " + e.getMessage());
+    return "ERROR";
+  }
+}
+
+private void executeLinksCsv(String linksCsvPath)
+{
+  writeToLog("--- Processing links CSV: " + linksCsvPath + " ---");
+  setStatus("[" + now() + "] Processing links CSV...");
+  log.info("[MultiLocationComponentCopier] Processing links CSV: " +
+    linksCsvPath);
+
+  java.io.File linksFile = resolveToFile(linksCsvPath);
+  if (linksFile == null || !linksFile.exists())
+  {
+    writeToLog("LINKS CSV NOT FOUND: " + linksCsvPath +
+      " - skipping link phase");
+    return;
+  }
+
+  int linked = 0, skipped = 0, errors = 0, dryrun = 0;
+  int rowNum = 0;
+
+  java.io.BufferedReader br = null;
+  try
+  {
+    br = new java.io.BufferedReader(new java.io.InputStreamReader(
+      new java.io.FileInputStream(linksFile), "UTF-8"));
+    String line;
+    while ((line = br.readLine()) != null)
+    {
+      rowNum++;
+      if (rowNum == 1) continue; // skip header
+
+      line = line.trim();
+      if (line.isEmpty()) continue;
+
+      String[] cols = line.split(",");
+      if (cols.length < 5)
+      {
+        writeToLog("LINK row " + rowNum + " SKIPPED: not enough columns");
+        skipped++;
+        continue;
+      }
+
+      String bord1Str  = cols[0].trim();
+      String slot1Str  = cols[1].trim();
+      String direction = cols[2].trim();
+      String bord2Str  = cols[3].trim();
+      String slot2Str  = cols[4].trim();
+
+      try
+      {
+        javax.baja.sys.BComponent comp1 = (javax.baja.sys.BComponent)
+          javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
+        javax.baja.sys.BComponent comp2 = (javax.baja.sys.BComponent)
+          javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
+
+        String result;
+        if (direction.equals(">"))
+          result = processLinkRow(comp1, slot1Str, comp2, slot2Str);
+        else if (direction.equals("<"))
+          result = processLinkRow(comp2, slot2Str, comp1, slot1Str);
+        else
+        {
+          writeToLog("LINK row " + rowNum +
+            " SKIPPED: unknown direction '" + direction + "'");
+          skipped++;
+          continue;
+        }
+
+        if (result.equals("LINKED"))      linked++;
+        else if (result.equals("SKIPPED")) skipped++;
+        else if (result.equals("DRYRUN"))  dryrun++;
+        else                               errors++;
+      }
+      catch (Exception e)
+      {
+        errors++;
+        writeToLog("LINK row " + rowNum + " ERROR: " + e.getMessage());
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog("LINKS CSV READ ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (br != null) try { br.close(); } catch (Exception ignore) {}
+  }
+
+  String linkSummary = "Links phase complete - Linked:" + linked +
+    " Skipped:" + skipped + " Errors:" + errors + " DryRun:" + dryrun;
+  writeToLog(linkSummary);
+  setStatus("[" + now() + "] " + linkSummary);
+  log.info("[MultiLocationComponentCopier] " + linkSummary);
 }
 
 // ----------------------------------------------------
@@ -760,7 +1085,6 @@ private void executeDirect(long runStart) throws Exception
   writeToLog(summary);
   writeResultsSummary(
     counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
-  updateLastRunSummary(summary);
 }
 
 // ----------------------------------------------------
@@ -861,7 +1185,6 @@ private void executeBQL(long runStart) throws Exception
   writeToLog(summary);
   writeResultsSummary(
     counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
-  updateLastRunSummary(summary);
 }
 
 // ----------------------------------------------------
@@ -1001,16 +1324,12 @@ private void executeCSV(long runStart) throws Exception
   writeToLog(summary);
   writeResultsSummary(
     counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
-  updateLastRunSummary(summary);
 }
 
 public void onStart() throws Exception
 {
-  appendLine(resolveArchivePath(),
-    "--- Log initialized " + now() + " ---");
-  clearFile(resolveArchivePath());
-
   updateVersion();
+  updateQuickGuide();
   setStatus("[" + now() + "] Ready");
   log.info("[MultiLocationComponentCopier] " + VERSION +
     " Service started - Ready");
@@ -1019,16 +1338,40 @@ public void onStart() throws Exception
 
 public void onExecute() throws Exception
 {
+  dryRunActive = false;
+  runJob();
+}
+
+public void onDryRun() throws Exception
+{
+  dryRunActive = true;
+  try { runJob(); }
+  finally { dryRunActive = false; }
+}
+
+private void runJob() throws Exception
+{
   long runStart = System.nanoTime();
 
   archiveLogFile();
   initResultsCsv();
-  updateLastRun();
 
-  log.info("[MultiLocationComponentCopier] onExecute triggered");
-  writeToLog(VERSION + " onExecute triggered" +
+  log.info("[MultiLocationComponentCopier] " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered");
+  writeToLog(VERSION + " " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered" +
     (isDryRun() ? " [DRY RUN]" : "") +
     (isDeleteMode() ? " [DELETE MODE]" : ""));
+
+  // Sample-CSV short-circuit: write the starter files and stop here so
+  // the user can edit them before running for real.
+  if (isCreateSampleCsv())
+  {
+    writeSampleCsvs();
+    String msg = "Sample CSV mode - wrote samples and exited. " +
+      "Set createSampleCsv to false to run normally.";
+    setStatus("[" + now() + "] " + msg);
+    writeToLog(msg);
+    return;
+  }
 
   int mode = getModeOrdinal();
   writeToLog("Operation mode: " + mode +
@@ -1046,6 +1389,12 @@ public void onExecute() throws Exception
       log.warning("[MultiLocationComponentCopier] " + msg);
       writeToLog(msg);
     }
+
+    // Optional post-copy link phase: if linksCsvPath is set,
+    // process it the same way LinkCreator's CSV mode does.
+    String linksPath = resolveLinksCsvPath();
+    if (linksPath != null && linksPath.length() > 0)
+      executeLinksCsv(linksPath);
   }
   catch (Exception e)
   {
