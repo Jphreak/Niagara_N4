@@ -1,93 +1,97 @@
 /*
 ================================================================================
-Program: LinkCreator (Direct / BQL / CSV) — Niagara N4.15
-Author: F. Lacroix
-Version Tag: v2.1
+Program: LinkCreator (Direct / BQL / CSV) - Niagara N4.15
+Author:  F. Lacroix
+Version: v1.00 (First Production Release)
+Date:    2026-04-27
 
-History / Notes:
-  • v1.0  — Initial release
-            Basic direct link creation between source and target components
-            Single sourceOrd, targetOrd, sourceSlot, targetSlot configuration
-  • v1.1  — Added Application Director logging via java.util.logging
-            Added timestamped status field updates
-            Added file logging via Niagara BIFile API
-            Resolved Niagara 4.15 security manager file write restrictions
-            Used file:^logs/ ORD pattern for file access
-  • v1.2  — Added log archiving to LinkCreator_previous.log on each execution
-            Added archive file pre-creation workaround for BIFile limitations
-  • v2.0  — Major feature expansion
-            Added Direct / BQL / CSV operation modes
-            Direct  — one source to one target (original behavior)
-            BQL     — one source to many targets via BQL query
-            CSV     — individual source to individual target pairs from CSV file
-            Added operationMode slot (BStatusEnum: Direct=0, BQL=1, CSV=2)
-            Added CSV format: BOrd1, Slot1, Direction, BOrd2, Slot2
-            Added direction support in CSV (> and <)
-            Added auto-detection of CSV file from sourceOrd or targetOrd
-            Added BQL iteration via reflection (BProjectionTable)
-            Added normalizeOrd() to handle slot:/ prefix automatically
-            Added dryRun boolean slot - simulate without creating links
-            Added deleteLinks boolean slot - remove previously created links
-            Added resultsCsvPath Ord slot - configurable results CSV location
-            Added lastRun, lastRunSummary, version read-only status slots
-            Added logFilePath, previousLogPath as editable Ord slots
-            Added unified appendLine() file method shared across all outputs
-            Added createLink() return value (LINKED/SKIPPED/ERROR) for
-            accurate counting
-            Fixed counting bug - OK renamed to LINKED, counts now reflect
-            actual link creation vs skips
-            Added CSV validation pass before processing
-            Added CSV row progress display in status field
-            Added row counter in status for BQL mode
-  • v2.1  — Added verify action
-            Checks expected links exist without creating or deleting anything
-            Works across all three modes (Direct, BQL, CSV)
-            Added unique link name hash suffix to prevent name collisions
-            when two source components share the same name
-            Added version slot auto-population on onStart()
-            Added lastRunSummary slot updated after each execution
-            Added updateLastRun() via reflection for Niagara 4.15 compatibility
+Purpose
+-------
+Create, delete, or verify Niagara component links between a source and one
+or more target components in three operating modes (Direct, BQL, CSV).
+Logs every action to the Application Director, a station-rooted log file,
+and a results CSV.
 
-QUICK GUIDE
---------------------------------------
-Purpose: Create, delete or verify Niagara component links between a source
-         and one or more target components. Logs all results to the
-         Application Director, a log file and a results CSV.
-Modes:
-  • Direct — One source component slot linked to one target component slot
-  • BQL    — One fixed source slot linked to many targets via BQL query
-  • CSV    — Individual source/target pairs read from a CSV file
-             CSV format: BOrd1, Slot1, Direction (> or <), BOrd2, Slot2
-Required slots:
-  • sourceSlot (String)         — source component slot name (Direct/BQL)
-  • targetSlot (String)         — target component slot name (Direct/BQL)
-  • sourceOrd (Ord)             — source component ORD (Direct/BQL)
-  • targetOrd (Ord)             — target component ORD or BQL query (Direct/BQL)
-                                  or CSV file path (CSV mode)
-  • operationMode (StatusEnum)  — Direct=0, BQL=1, CSV=2
-  • dryRun (Boolean)            — simulate without creating or deleting links
-  • deleteLinks (Boolean)       — delete links instead of creating them
-  • logFilePath (Ord)           — path to log file
-  • previousLogPath (Ord)       — path to archived previous log
-  • resultsCsvPath (Ord)        — path to results CSV output
-  • lastRun (String)            — read only, timestamp of last execution
-  • lastRunSummary (String)     — read only, summary of last run results
-  • version (String)            — read only, current program version
-Actions:
-  • execute  — run the program in the current operation mode
-  • verify   — check expected links exist without making any changes
-High-level flow:
-  1) Archive previous log and initialize fresh results CSV
-  2) Detect mode from operationMode slot
-  3) Resolve source and target(s) based on mode
-  4) Create, delete or dry-run each link and log results
-  5) Write summary line to results CSV and update status slots
+Modes
+-----
+  Direct  One source component slot linked to one target slot
+  BQL     One fixed source slot linked to many targets via BQL query
+  CSV     Source/target pairs read from a 5-column CSV file
+          (BOrd1, Slot1, Direction (>|<), BOrd2, Slot2)
+
+Actions
+-------
+  execute   Run the program in the configured operation mode
+  dryRun    Simulate the run without creating or deleting any links
+  verify    Check that expected links exist (no changes made)
+
+Key features
+------------
+  - Auto-archives the active log to a timestamped copy on every run so
+    the user retains a full run history. Archive timestamp reflects the
+    run trigger time.
+  - Self-documenting CSV format: createSampleCsv writes a starter file
+    with example rows the user can edit in place.
+  - Unique link-name hash suffix prevents collisions when two source
+    components share the same display name.
+  - dryRun previews are reported as DRYRUN with full skip-reason detail
+    so summary counts always reflect what was previewed.
+  - All output paths (log, archive, results CSV, sample CSV) are
+    user-configurable Ord slots; archive log inherits the active log's
+    name with the run timestamp appended.
+  - quickGuide String slot displays the on-station user help next to
+    the configuration slots.
+
+Outputs
+-------
+  status (string)        live timestamped progress and final summary
+  logFilePath            human-readable log of every operation
+  resultsCsvPath         per-link CSV: timestamp, names, status, etc.
+  Application Director   info / warning / severe lines for ops staff
+
+Quick start
+-----------
+  1) Set operationMode (Direct / BQL / CSV) and configure ords + slots
+  2) Right-click  >  Actions  >  dryRun   to preview
+  3) Right-click  >  Actions  >  execute  to commit
+  4) Inspect the log file and results CSV for full details
 ================================================================================
 */
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("LinkCreator");
 
-private static final String VERSION = "v2.1";
+private static final String VERSION = "v1.00";
+
+// On-station user help -- written into the read-only quickGuide slot
+// during onStart() so it shows up at the bottom of the property sheet.
+private static final String QUICK_GUIDE =
+  "LinkCreator " + "v1.00\n" +
+  "=====================================\n" +
+  "\n" +
+  "Modes (operationMode):\n" +
+  "  Direct  source slot -> target slot (one to one)\n" +
+  "  BQL     source slot -> each BQL target (one to many)\n" +
+  "  CSV     source/target pairs from a 5-col CSV\n" +
+  "\n" +
+  "Actions:\n" +
+  "  Execute - run the configured mode\n" +
+  "  Dry Run - preview without changes\n" +
+  "  Verify  - confirm expected links exist\n" +
+  "\n" +
+  "CSV format (5 columns, header row required):\n" +
+  "  BOrd1, Slot1, Direction, BOrd2, Slot2\n" +
+  "  Direction:  >  links 1 -> 2     <  links 2 -> 1\n" +
+  "\n" +
+  "Steps:\n" +
+  "  1) Choose operationMode and configure ords + slots\n" +
+  "  2) (optional) set createSampleCsv=true and execute to\n" +
+  "     get a starter CSV with example rows\n" +
+  "  3) dryRun first to preview\n" +
+  "  4) execute to commit\n" +
+  "  5) check logFilePath and resultsCsvPath for details\n" +
+  "\n" +
+  "Tip: set deleteLinks=true to remove links instead of\n" +
+  "     creating them. Dry Run previews delete-mode as well.";
 
 private String now()
 {
@@ -109,15 +113,28 @@ private String resolveLogPath()
   return "file:^logs/LinkCreator.log";
 }
 
-private String resolveArchivePath()
+// Build a timestamped archive path from the active log path.
+// Inserts "_yyyy-MM-dd_HH-mm-ss" before the file extension, where the
+// timestamp is the current run's trigger time (i.e. when this archive
+// operation runs). This is more reliable than reading the log file's
+// creation time -- on Windows, file tunneling can make the "creation"
+// time stick to a stale value across renames, causing repeated archives
+// to collide on the same filename.
+//   file:^logs/LinkCreator.log
+//     -> file:^logs/LinkCreator_2026-04-27_12-23-25.log
+private String buildTimestampedArchivePath()
 {
-  try
-  {
-    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("previousLogPath");
-    if (ord != null && !ord.isNull()) return ord.toString().trim();
-  }
-  catch (Exception ignore) {}
-  return "file:^logs/LinkCreator_previous.log";
+  String logPath = resolveLogPath();
+
+  String ts = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss")
+    .format(new java.util.Date());
+
+  int slashIdx = Math.max(logPath.lastIndexOf('/'), logPath.lastIndexOf('\\'));
+  int dotIdx = logPath.lastIndexOf('.');
+
+  if (dotIdx > slashIdx)
+    return logPath.substring(0, dotIdx) + "_" + ts + logPath.substring(dotIdx);
+  return logPath + "_" + ts;
 }
 
 private String resolveResultsCsvPath()
@@ -131,16 +148,13 @@ private String resolveResultsCsvPath()
   return "file:^logs/LinkCreator_results.csv";
 }
 
+// Set by onDryRun() to make isDryRun() report true for the duration of
+// that one invocation. onExecute() and onVerify() both reset it on entry.
+private boolean dryRunActive = false;
+
 private boolean isDryRun()
 {
-  try
-  {
-    Object val = get("dryRun");
-    if (val instanceof javax.baja.sys.BBoolean)
-      return ((javax.baja.sys.BBoolean) val).getBoolean();
-  }
-  catch (Exception ignore) {}
-  return false;
+  return dryRunActive;
 }
 
 private boolean isDeleteMode()
@@ -155,46 +169,31 @@ private boolean isDeleteMode()
   return false;
 }
 
-private void updateLastRun()
+private boolean isCreateSampleCsv()
 {
   try
   {
-    java.lang.reflect.Method m = this.getClass().getMethod(
-      "setLastRun", new Class[]{ String.class });
-    m.invoke(this, now());
+    Object val = get("createSampleCsv");
+    if (val instanceof javax.baja.sys.BBoolean)
+      return ((javax.baja.sys.BBoolean) val).getBoolean();
   }
-  catch (Exception ignore)
-  {
-    try
-    {
-      java.lang.reflect.Method m = this.getClass().getMethod(
-        "setLastRun", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(now()));
-    }
-    catch (Exception ignore2) {}
-  }
+  catch (Exception ignore) {}
+  return false;
 }
 
-private void updateLastRunSummary(String summary)
+private String resolveSampleCsvPath()
 {
   try
   {
-    java.lang.reflect.Method m = this.getClass().getMethod(
-      "setLastRunSummary", new Class[]{ String.class });
-    m.invoke(this, summary);
+    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("sampleCsvPath");
+    if (ord != null && !ord.isNull()) return ord.toString().trim();
   }
-  catch (Exception ignore)
-  {
-    try
-    {
-      java.lang.reflect.Method m = this.getClass().getMethod(
-        "setLastRunSummary", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(summary));
-    }
-    catch (Exception ignore2) {}
-  }
+  catch (Exception ignore) {}
+  return "file:^logs/LinkCreator_SAMPLE.csv";
 }
 
+// Reflection-based setter for the version slot -- avoids a hard
+// compile-time dependency on a generated setVersion() method.
 private void updateVersion()
 {
   try
@@ -215,48 +214,92 @@ private void updateVersion()
   }
 }
 
-// ----------------------------------------------------
-// Single unified file append method
-// ----------------------------------------------------
-private void appendLine(String filePath, String line)
+// Reflection-based setter for the quickGuide slot. Same pattern as
+// updateVersion() -- the slot is a baja:String so we try a String
+// setter first, then a BString setter as a fallback.
+private void updateQuickGuide()
 {
   try
   {
-    javax.baja.naming.BOrd fileOrd =
-      javax.baja.naming.BOrd.make(filePath);
-    javax.baja.file.BIFile bfile =
-      (javax.baja.file.BIFile) fileOrd.resolve().get();
-
-    String existing = "";
+    java.lang.reflect.Method m = this.getClass().getMethod(
+      "setQuickGuide", new Class[]{ String.class });
+    m.invoke(this, QUICK_GUIDE);
+  }
+  catch (Exception ignore)
+  {
     try
     {
-      java.io.InputStream is = bfile.getInputStream();
-      java.io.BufferedReader br = new java.io.BufferedReader(
-        new java.io.InputStreamReader(is));
-      java.lang.StringBuilder sb = new java.lang.StringBuilder();
-      String l;
-      while ((l = br.readLine()) != null)
-      {
-        sb.append(l);
-        sb.append(System.getProperty("line.separator"));
-      }
-      br.close();
-      is.close();
-      existing = sb.toString();
+      java.lang.reflect.Method m = this.getClass().getMethod(
+        "setQuickGuide", new Class[]{ javax.baja.sys.BString.class });
+      m.invoke(this, javax.baja.sys.BString.make(QUICK_GUIDE));
     }
-    catch (Exception ignore) {}
+    catch (Exception ignore2) {}
+  }
+}
 
-    java.io.OutputStream os = bfile.getOutputStream();
-    java.io.PrintWriter pw = new java.io.PrintWriter(
-      new java.io.BufferedWriter(new java.io.OutputStreamWriter(os)));
-    pw.print(existing);
-    pw.println(line);
-    pw.close();
-    os.close();
+// ----------------------------------------------------
+// File path resolution
+// Resolves a Niagara ORD-style path ("file:^logs/foo.log") or a plain
+// relative/absolute path into a real java.io.File rooted at station home.
+// ----------------------------------------------------
+private java.io.File resolveToFile(String pathOrOrd)
+{
+  if (pathOrOrd == null) return null;
+  String p = pathOrOrd.trim();
+  if (p.length() == 0) return null;
+
+  // Strip "file:" scheme if present
+  if (p.startsWith("file:"))
+    p = p.substring(5);
+
+  // "^" in a Niagara ORD means relative to station home
+  boolean stationRelative = false;
+  if (p.startsWith("^"))
+  {
+    stationRelative = true;
+    p = p.substring(1);
+    while (p.startsWith("/") || p.startsWith("\\"))
+      p = p.substring(1);
+  }
+
+  java.io.File f = new java.io.File(p);
+  if (stationRelative || !f.isAbsolute())
+    f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
+
+  return f;
+}
+
+// ----------------------------------------------------
+// Single unified file append method
+// Appends a line to the file, creating the file (and parent folder)
+// if they don't already exist.
+// ----------------------------------------------------
+private void appendLine(String filePath, String line)
+{
+  java.io.BufferedWriter bw = null;
+  try
+  {
+    java.io.File file = resolveToFile(filePath);
+    if (file == null) return;
+
+    // Make sure the parent directory exists
+    java.io.File parent = file.getParentFile();
+    if (parent != null && !parent.exists())
+      parent.mkdirs();
+
+    // append=true creates the file if it does not exist yet
+    bw = new java.io.BufferedWriter(new java.io.OutputStreamWriter(
+      new java.io.FileOutputStream(file, true), "UTF-8"));
+    bw.write(line);
+    bw.newLine();
   }
   catch (Exception e)
   {
     setStatus("[" + now() + "] FILE ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (bw != null) try { bw.close(); } catch (Exception ignore) {}
   }
 }
 
@@ -270,20 +313,29 @@ private void writeToResults(String line)
   appendLine(resolveResultsCsvPath(), line);
 }
 
+// Truncate (or create empty) the file, making the parent folder if needed.
 private void clearFile(String filePath)
 {
+  java.io.FileOutputStream fos = null;
   try
   {
-    javax.baja.naming.BOrd fileOrd =
-      javax.baja.naming.BOrd.make(filePath);
-    javax.baja.file.BIFile bfile =
-      (javax.baja.file.BIFile) fileOrd.resolve().get();
-    java.io.OutputStream os = bfile.getOutputStream();
-    os.close();
+    java.io.File file = resolveToFile(filePath);
+    if (file == null) return;
+
+    java.io.File parent = file.getParentFile();
+    if (parent != null && !parent.exists())
+      parent.mkdirs();
+
+    // append=false truncates if it exists, creates if it doesn't
+    fos = new java.io.FileOutputStream(file, false);
   }
   catch (Exception e)
   {
     setStatus("[" + now() + "] CLEAR ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (fos != null) try { fos.close(); } catch (Exception ignore) {}
   }
 }
 
@@ -292,47 +344,74 @@ private void archiveLogFile()
   try
   {
     String logPath = resolveLogPath();
-    String archivePath = resolveArchivePath();
-
-    javax.baja.naming.BOrd fileOrd =
-      javax.baja.naming.BOrd.make(logPath);
-    javax.baja.file.BIFile bfile =
-      (javax.baja.file.BIFile) fileOrd.resolve().get();
-
-    java.io.InputStream is;
-    try { is = bfile.getInputStream(); is.close(); }
-    catch (Exception e) { return; }
-
-    is = bfile.getInputStream();
-    java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is));
-    java.lang.StringBuilder sb = new java.lang.StringBuilder();
-    String line;
-    while ((line = br.readLine()) != null)
-    {
-      sb.append(line);
-      sb.append(System.getProperty("line.separator"));
-    }
-    br.close();
-    is.close();
-
-    if (sb.toString().trim().isEmpty())
+    java.io.File logFile = resolveToFile(logPath);
+    if (logFile == null || !logFile.exists() || logFile.length() == 0)
       return;
 
-    clearFile(archivePath);
-    String[] lines = sb.toString().split("\n");
-    for (int i = 0; i < lines.length; i++)
+    String archivePath = buildTimestampedArchivePath();
+    java.io.File archiveFile = resolveToFile(archivePath);
+    if (archiveFile == null) return;
+
+    // Make sure the archive's parent folder exists
+    java.io.File parent = archiveFile.getParentFile();
+    if (parent != null && !parent.exists())
+      parent.mkdirs();
+
+    // Atomically rename the active log to the timestamped archive.
+    // If rename fails (e.g. cross-filesystem or destination exists),
+    // fall back to byte copy then truncate the original.
+    if (!logFile.renameTo(archiveFile))
     {
-      String l = lines[i].replace("\r", "").trim();
-      if (l.length() > 0)
-        appendLine(archivePath, l);
+      java.io.FileInputStream  fis = null;
+      java.io.FileOutputStream fos = null;
+      try
+      {
+        fis = new java.io.FileInputStream(logFile);
+        fos = new java.io.FileOutputStream(archiveFile, false);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
+      }
+      finally
+      {
+        if (fis != null) try { fis.close(); } catch (Exception ignore) {}
+        if (fos != null) try { fos.close(); } catch (Exception ignore) {}
+      }
+      // Truncate the original log so the next run starts fresh
+      clearFile(logPath);
     }
-    clearFile(logPath);
   }
   catch (Exception e)
   {
     writeToLog("ARCHIVE ERROR: " + e.getMessage());
   }
+}
+
+// ----------------------------------------------------
+// Sample CSV - emit a self-documenting starter file
+// Format reminder: header row is always skipped on read, so the
+// header itself acts as the inline documentation.
+// ----------------------------------------------------
+private void writeSampleCsv()
+{
+  String path = resolveSampleCsvPath();
+  clearFile(path);
+  appendLine(path,
+    "BOrd1 (source if Direction is '>'),Slot1," +
+    "Direction (> sends 1->2; < sends 2->1)," +
+    "BOrd2 (target if Direction is '>'),Slot2");
+  appendLine(path,
+    "station:|slot:/Drivers/Sensors/TempSensor1,Out,>," +
+    "station:|slot:/Drivers/Logic/Controller1,SetPoint");
+  appendLine(path,
+    "slot:/Drivers/Sensors/TempSensor2,Out,>," +
+    "slot:/Drivers/Logic/Output1,In16");
+  appendLine(path,
+    "station:|slot:/Drivers/Source,Out,<," +
+    "station:|slot:/Drivers/Target,In");
+
+  writeToLog("Sample CSV written to: " + path);
+  log.info("[LinkCreator] Sample CSV written to: " + path);
 }
 
 // ----------------------------------------------------
@@ -343,18 +422,23 @@ private void initResultsCsv()
   clearFile(resolveResultsCsvPath());
   writeToResults(
     "Timestamp,SourceName,SourceSlotPath," +
-    "TargetName,TargetSlotPath,Status,Message,Mode,LinkName");
+    "TargetName,TargetSlotPath,Status,Message,Mode,LinkName,DurationMs");
 }
 
+// Compact summary row: "Total,<summary text>" -- two fields, no
+// padding commas. The leading blank line keeps the visual gap
+// between per-link rows and the summary when opened in Excel.
 private void writeResultsSummary(
-  int linked, int skipped, int errors, int dryrun, int deleted)
+  int linked, int skipped, int errors, int dryrun, int deleted,
+  long totalMs)
 {
   appendLine(resolveResultsCsvPath(), "");
-  writeToResults("Total,,,,,Linked:" + linked +
+  writeToResults("Total,Linked:" + linked +
     " Skipped:" + skipped +
     " Errors:" + errors +
     " DryRun:" + dryrun +
-    " Deleted:" + deleted + ",,,");
+    " Deleted:" + deleted +
+    " TotalTime:" + totalMs + "ms");
 }
 
 private String csvEscape(String s)
@@ -390,10 +474,14 @@ private int getModeOrdinal()
 private String buildLinkName(
   javax.baja.sys.BComponent srcComp, String srcSlotStr, String tgtSlotStr)
 {
+  // Link names live as slot names ON the target component, so they must be
+  // unique among the target's slots. We use the slot pair as the readable
+  // body (e.g. "out_to_in16") and append a 4-digit hash of the source
+  // component's slot path to disambiguate same-named sources sitting in
+  // different parts of the station.
   String srcPath = srcComp.getSlotPath().toString();
   int pathHash = Math.abs(srcPath.hashCode()) % 10000;
-  return "link_" + srcComp.getName() + "_" + srcSlotStr +
-    "_to_" + tgtSlotStr + "_" + pathHash;
+  return srcSlotStr + "_to_" + tgtSlotStr + "_" + pathHash;
 }
 
 private int[] countResult(int[] counts, String result)
@@ -705,7 +793,6 @@ private void verifyLinks() throws Exception
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
-  updateLastRunSummary(summary);
 }
 
 // ----------------------------------------------------
@@ -717,6 +804,7 @@ private String processLink(
   javax.baja.sys.BComponent tgtComp, String tgtSlotStr,
   String mode)
 {
+  long t0 = System.nanoTime();
   try
   {
     String linkName = buildLinkName(srcComp, srcSlotStr, tgtSlotStr);
@@ -730,8 +818,10 @@ private String processLink(
     {
       if (tgtComp.getSlot(linkName) == null)
       {
-        String detail = "SKIPPED (delete): link not found --> " +
-          srcComp.getName() + "[" + srcSlotStr + "] -> " +
+        boolean dry = isDryRun();
+        String detail = (dry ? "DRYRUN (delete): would skip - link not found"
+                             : "SKIPPED (delete): link not found") +
+          " --> " + srcComp.getName() + "[" + srcSlotStr + "] -> " +
           tgtComp.getName() + "[" + tgtSlotStr + "]";
         setStatus("[" + now() + "] " + detail);
         log.warning("[LinkCreator] " + detail);
@@ -739,13 +829,16 @@ private String processLink(
         writeToResults(csvEscape(now()) + "," +
           csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
           csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
-          "SKIPPED,Link not found," + csvEscape(mode) + "," +
-          csvEscape(linkName));
-        return "SKIPPED";
+          (dry ? "DRYRUN,Would skip - link not found"
+               : "SKIPPED,Link not found") + "," +
+          csvEscape(mode) + "," + csvEscape(linkName) + ",0.000");
+        return dry ? "DRYRUN" : "SKIPPED";
       }
 
       if (isDryRun())
       {
+        String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+          (System.nanoTime() - t0) / 1000000.0);
         String detail = "DRYRUN (delete): would remove --> " +
           srcComp.getName() + "[" + srcSlotStr + "] -> " +
           tgtComp.getName() + "[" + tgtSlotStr + "]";
@@ -756,28 +849,32 @@ private String processLink(
           csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
           csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
           "DRYRUN,Would delete," + csvEscape(mode) + "," +
-          csvEscape(linkName));
+          csvEscape(linkName) + "," + durStr);
         return "DRYRUN";
       }
 
       tgtComp.remove(linkName);
+      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
       String detail = "DELETED: " + srcComp.getName() + "[" + srcSlotStr +
-        "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "]";
+        "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "] (" + durStr + "ms)";
       setStatus("[" + now() + "] " + detail);
       log.info("[LinkCreator] " + detail);
       writeToLog(detail);
       writeToResults(csvEscape(now()) + "," +
         csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
         csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
-        "DELETED,," + csvEscape(mode) + "," + csvEscape(linkName));
+        "DELETED,," + csvEscape(mode) + "," + csvEscape(linkName) + "," + durStr);
       return "DELETED";
     }
 
     // ---------------- CREATE MODE ----------------
     if (tgtComp.getSlot(linkName) != null)
     {
-      String detail = "SKIPPED: Link already exists --> " +
-        srcComp.getName() + "[" + srcSlotStr + "] -> " +
+      boolean dry = isDryRun();
+      String detail = (dry ? "DRYRUN: would skip - link already exists"
+                           : "SKIPPED: Link already exists") +
+        " --> " + srcComp.getName() + "[" + srcSlotStr + "] -> " +
         tgtComp.getName() + "[" + tgtSlotStr + "]";
       setStatus("[" + now() + "] " + detail);
       log.warning("[LinkCreator] " + detail);
@@ -785,13 +882,16 @@ private String processLink(
       writeToResults(csvEscape(now()) + "," +
         csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
         csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
-        "SKIPPED,Link already exists," + csvEscape(mode) + "," +
-        csvEscape(linkName));
-      return "SKIPPED";
+        (dry ? "DRYRUN,Would skip - link already exists"
+             : "SKIPPED,Link already exists") + "," +
+        csvEscape(mode) + "," + csvEscape(linkName) + ",0.000");
+      return dry ? "DRYRUN" : "SKIPPED";
     }
 
     if (isDryRun())
     {
+      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
       String detail = "DRYRUN: would link --> " +
         srcComp.getName() + "[" + srcSlotStr + "] -> " +
         tgtComp.getName() + "[" + tgtSlotStr + "]";
@@ -802,7 +902,7 @@ private String processLink(
         csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
         csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
         "DRYRUN,Would create link," + csvEscape(mode) + "," +
-        csvEscape(linkName));
+        csvEscape(linkName) + "," + durStr);
       return "DRYRUN";
     }
 
@@ -813,19 +913,23 @@ private String processLink(
       new javax.baja.sys.BLink(srcHandleOrd, srcSlotStr, tgtSlotStr, true);
     tgtComp.add(linkName, newLink, null);
 
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+      (System.nanoTime() - t0) / 1000000.0);
     String detail = "LINKED: " + srcComp.getName() + "[" + srcSlotStr +
-      "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "]";
+      "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "] (" + durStr + "ms)";
     setStatus("[" + now() + "] " + detail);
     log.info("[LinkCreator] SUCCESS - " + detail);
     writeToLog("SUCCESS - " + detail);
     writeToResults(csvEscape(now()) + "," +
       csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
       csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
-      "LINKED,," + csvEscape(mode) + "," + csvEscape(linkName));
+      "LINKED,," + csvEscape(mode) + "," + csvEscape(linkName) + "," + durStr);
     return "LINKED";
   }
   catch (Exception e)
   {
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+      (System.nanoTime() - t0) / 1000000.0);
     String detail = "ERROR in processLink: " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
     log.severe("[LinkCreator] " + detail);
@@ -834,7 +938,7 @@ private String processLink(
       csvEscape(srcComp.getName()) + ",," +
       csvEscape(tgtComp.getName()) + ",," +
       "ERROR," + csvEscape(e.getMessage()) + "," +
-      csvEscape(mode) + ",");
+      csvEscape(mode) + ",," + durStr);
     return "ERROR";
   }
 }
@@ -842,7 +946,7 @@ private String processLink(
 // ----------------------------------------------------
 // MODE: Direct
 // ----------------------------------------------------
-private void executeDirect() throws Exception
+private void executeDirect(long runStart) throws Exception
 {
   writeToLog("Mode: DIRECT" +
     (isDryRun() ? " [DRY RUN]" : "") +
@@ -879,19 +983,21 @@ private void executeDirect() throws Exception
     srcComp, getSourceSlot(), tgtComp, getTargetSlot(), "Direct");
   countResult(counts, result);
 
+  long totalMs = (System.nanoTime() - runStart) / 1000000L;
   String summary = "Direct complete - Linked:" + counts[0] +
     " Skipped:" + counts[1] + " Errors:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4];
+    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
+    " TotalTime:" + totalMs + "ms";
   setStatus("[" + now() + "] " + summary);
   writeToLog(summary);
-  writeResultsSummary(counts[0], counts[1], counts[2], counts[3], counts[4]);
-  updateLastRunSummary(summary);
+  writeResultsSummary(
+    counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
 }
 
 // ----------------------------------------------------
 // MODE: BQL
 // ----------------------------------------------------
-private void executeBQL() throws Exception
+private void executeBQL(long runStart) throws Exception
 {
   writeToLog("Mode: BQL" +
     (isDryRun() ? " [DRY RUN]" : "") +
@@ -966,20 +1072,22 @@ private void executeBQL() throws Exception
     return;
   }
 
+  long totalMs = (System.nanoTime() - runStart) / 1000000L;
   String summary = "BQL complete - Linked:" + counts[0] +
     " Skipped:" + counts[1] + " Errors:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4];
+    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
+    " TotalTime:" + totalMs + "ms";
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
-  writeResultsSummary(counts[0], counts[1], counts[2], counts[3], counts[4]);
-  updateLastRunSummary(summary);
+  writeResultsSummary(
+    counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
 }
 
 // ----------------------------------------------------
 // MODE: CSV
 // ----------------------------------------------------
-private void executeCSV() throws Exception
+private void executeCSV(long runStart) throws Exception
 {
   writeToLog("Mode: CSV" +
     (isDryRun() ? " [DRY RUN]" : "") +
@@ -1101,23 +1209,22 @@ private void executeCSV() throws Exception
     is.close();
   }
 
+  long totalMs = (System.nanoTime() - runStart) / 1000000L;
   String summary = "CSV complete - Linked:" + counts[0] +
     " Skipped:" + counts[1] + " Errors:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4];
+    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
+    " TotalTime:" + totalMs + "ms";
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
-  writeResultsSummary(counts[0], counts[1], counts[2], counts[3], counts[4]);
-  updateLastRunSummary(summary);
+  writeResultsSummary(
+    counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
 }
 
 public void onStart() throws Exception
 {
-  appendLine(resolveArchivePath(),
-    "--- Log initialized " + now() + " ---");
-  clearFile(resolveArchivePath());
-
   updateVersion();
+  updateQuickGuide();
   setStatus("[" + now() + "] Ready");
   log.info("[LinkCreator] " + VERSION + " Service started - Ready");
   writeToLog(VERSION + " Service started - Ready");
@@ -1125,14 +1232,40 @@ public void onStart() throws Exception
 
 public void onExecute() throws Exception
 {
+  dryRunActive = false;
+  runJob();
+}
+
+public void onDryRun() throws Exception
+{
+  dryRunActive = true;
+  try { runJob(); }
+  finally { dryRunActive = false; }
+}
+
+private void runJob() throws Exception
+{
+  long runStart = System.nanoTime();
+
   archiveLogFile();
   initResultsCsv();
-  updateLastRun();
 
-  log.info("[LinkCreator] onExecute triggered");
-  writeToLog(VERSION + " onExecute triggered" +
+  log.info("[LinkCreator] " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered");
+  writeToLog(VERSION + " " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered" +
     (isDryRun() ? " [DRY RUN]" : "") +
     (isDeleteMode() ? " [DELETE MODE]" : ""));
+
+  // Sample-CSV short-circuit: write the starter file and stop here so
+  // the user can edit it before running for real.
+  if (isCreateSampleCsv())
+  {
+    writeSampleCsv();
+    String msg = "Sample CSV mode - wrote sample and exited. " +
+      "Set createSampleCsv to false to run normally.";
+    setStatus("[" + now() + "] " + msg);
+    writeToLog(msg);
+    return;
+  }
 
   int mode = getModeOrdinal();
   writeToLog("Operation mode: " + mode +
@@ -1140,9 +1273,9 @@ public void onExecute() throws Exception
 
   try
   {
-    if (mode == 0)      executeDirect();
-    else if (mode == 1) executeBQL();
-    else if (mode == 2) executeCSV();
+    if (mode == 0)      executeDirect(runStart);
+    else if (mode == 1) executeBQL(runStart);
+    else if (mode == 2) executeCSV(runStart);
     else
     {
       String msg = "[" + now() + "] ERROR: unknown operationMode " + mode;
@@ -1160,9 +1293,9 @@ public void onExecute() throws Exception
 
 public void onVerify() throws Exception
 {
+  dryRunActive = false;
   archiveLogFile();
   initResultsCsv();
-  updateLastRun();
   writeToLog(VERSION + " onVerify triggered");
 
   try
