@@ -2,8 +2,15 @@
 ================================================================================
 Program: Multi-Location Component Copier (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.00 (First Production Release)
-Date:    2026-04-27
+Version: v1.01
+Date:    2026-04-28
+
+Changes in v1.01
+----------------
+  - Results CSV is now archived with a timestamp on every run, the
+    same way the active log file is. Previous-run detail is preserved
+    as e.g. MultiLocationComponentCopier_results_2026-04-28_09-12-45.csv
+    before the new header is written.
 
 Inspiration
 -----------
@@ -39,8 +46,9 @@ Key features
     the listed links after the copy phase finishes
   - createSampleCsv writes two starter CSVs (copy + links) so the user
     can edit them in place rather than guessing the format
-  - Auto-archives the active log to a timestamped copy on every run.
-    Archive timestamp reflects the run trigger time.
+  - Auto-archives the active log AND the results CSV to timestamped
+    copies on every run. Archive timestamp reflects the run trigger
+    time.
   - quickGuide String slot displays the on-station user help next to
     the configuration slots.
 
@@ -65,12 +73,12 @@ Quick start
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("MultiLocationComponentCopier");
 
-private static final String VERSION = "v1.00";
+private static final String VERSION = "v1.01";
 
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "Multi-Location Component Copier " + "v1.00\n" +
+  "Multi-Location Component Copier " + "v1.01\n" +
   "=====================================\n" +
   "\n" +
   "Modes (destinationMode):\n" +
@@ -125,28 +133,28 @@ private String resolveLogPath()
   return "file:^logs/MultiLocationComponentCopier.log";
 }
 
-// Build a timestamped archive path from the active log path.
+// Build a timestamped archive path from the given active file path.
 // Inserts "_yyyy-MM-dd_HH-mm-ss" before the file extension, where the
 // timestamp is the current run's trigger time (i.e. when this archive
-// operation runs). This is more reliable than reading the log file's
+// operation runs). This is more reliable than reading the file's
 // creation time -- on Windows, file tunneling can make the "creation"
 // time stick to a stale value across renames, causing repeated archives
 // to collide on the same filename.
 //   file:^logs/MultiLocationComponentCopier.log
 //     -> file:^logs/MultiLocationComponentCopier_2026-04-27_12-23-25.log
-private String buildTimestampedArchivePath()
+//   file:^logs/MultiLocationComponentCopier_results.csv
+//     -> file:^logs/MultiLocationComponentCopier_results_2026-04-27_12-23-25.csv
+private String buildTimestampedArchivePath(String filePath)
 {
-  String logPath = resolveLogPath();
-
   String ts = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss")
     .format(new java.util.Date());
 
-  int slashIdx = Math.max(logPath.lastIndexOf('/'), logPath.lastIndexOf('\\'));
-  int dotIdx = logPath.lastIndexOf('.');
+  int slashIdx = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  int dotIdx = filePath.lastIndexOf('.');
 
   if (dotIdx > slashIdx)
-    return logPath.substring(0, dotIdx) + "_" + ts + logPath.substring(dotIdx);
-  return logPath + "_" + ts;
+    return filePath.substring(0, dotIdx) + "_" + ts + filePath.substring(dotIdx);
+  return filePath + "_" + ts;
 }
 
 private String resolveResultsCsvPath()
@@ -378,16 +386,19 @@ private void clearFile(String filePath)
   }
 }
 
-private void archiveLogFile()
+// Generic archive helper: rename the active file to a timestamped
+// copy, falling back to byte-copy + truncate if rename fails.
+// Used for both the active log and the results CSV so they share
+// identical archive semantics.
+private void archiveFile(String activePath, String label)
 {
   try
   {
-    String logPath = resolveLogPath();
-    java.io.File logFile = resolveToFile(logPath);
-    if (logFile == null || !logFile.exists() || logFile.length() == 0)
+    java.io.File activeFile = resolveToFile(activePath);
+    if (activeFile == null || !activeFile.exists() || activeFile.length() == 0)
       return;
 
-    String archivePath = buildTimestampedArchivePath();
+    String archivePath = buildTimestampedArchivePath(activePath);
     java.io.File archiveFile = resolveToFile(archivePath);
     if (archiveFile == null) return;
 
@@ -396,16 +407,16 @@ private void archiveLogFile()
     if (parent != null && !parent.exists())
       parent.mkdirs();
 
-    // Atomically rename the active log to the timestamped archive.
+    // Atomically rename the active file to the timestamped archive.
     // If rename fails (e.g. cross-filesystem or destination exists),
     // fall back to byte copy then truncate the original.
-    if (!logFile.renameTo(archiveFile))
+    if (!activeFile.renameTo(archiveFile))
     {
       java.io.FileInputStream  fis = null;
       java.io.FileOutputStream fos = null;
       try
       {
-        fis = new java.io.FileInputStream(logFile);
+        fis = new java.io.FileInputStream(activeFile);
         fos = new java.io.FileOutputStream(archiveFile, false);
         byte[] buf = new byte[8192];
         int n;
@@ -416,14 +427,24 @@ private void archiveLogFile()
         if (fis != null) try { fis.close(); } catch (Exception ignore) {}
         if (fos != null) try { fos.close(); } catch (Exception ignore) {}
       }
-      // Truncate the original log so the next run starts fresh
-      clearFile(logPath);
+      // Truncate the original so the next run starts fresh
+      clearFile(activePath);
     }
   }
   catch (Exception e)
   {
-    writeToLog("ARCHIVE ERROR: " + e.getMessage());
+    writeToLog(label + " ARCHIVE ERROR: " + e.getMessage());
   }
+}
+
+private void archiveLogFile()
+{
+  archiveFile(resolveLogPath(), "LOG");
+}
+
+private void archiveResultsCsv()
+{
+  archiveFile(resolveResultsCsvPath(), "RESULTS-CSV");
 }
 
 // ----------------------------------------------------
@@ -431,6 +452,10 @@ private void archiveLogFile()
 // ----------------------------------------------------
 private void initResultsCsv()
 {
+  // Archive the previous run's CSV (if any) to a timestamped copy
+  // before we wipe the file and write a fresh header. Same pattern
+  // as archiveLogFile() so log + CSV histories stay in lockstep.
+  archiveResultsCsv();
   clearFile(resolveResultsCsvPath());
   writeToResults(
     "Timestamp,SourceName,SourceSlotPath," +
