@@ -2,8 +2,100 @@
 ================================================================================
 Program: Multi-Location Component Copier (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.01
-Date:    2026-04-28
+Version: v2.01
+Date:    2026-04-29
+
+Changes in v2.01
+----------------
+  - Reverse-mode (deleteComponent=true) now also REMOVES the post-copy
+    links instead of trying to create them. The link phase is also
+    reordered to run BEFORE the component delete phase so the link
+    name lookups still find their targets. Previously, reverse runs
+    that included a links CSV always reported spurious link errors
+    because the components had already been removed by the time the
+    link phase tried to act on them.
+        Order of operations:
+          Normal (execute)                : copy phase  -> link phase (create)
+          Reverse (deleteComponent=true)  : link phase (remove) -> delete phase
+          Verify                          : verify phase -> link verify (unchanged)
+          Dry-run + reverse               : same reversed order, no mutations
+  - Link phase now reports live row progress in the status field
+    ("Linking links: row X of Y...", or "Verifying" / "Reversing"
+    depending on mode) - matching the per-row updates the copy
+    phase already had. Costs one extra pass over the links CSV at
+    the start of the phase to pre-count data rows.
+  - Link phase summary now reports clearly per mode:
+          Verify   : Found:F Missing:M Errors:E
+          Reverse  : Removed:R Skipped:S Errors:E DryRun:D  (reverse)
+          Normal   : Linked:L Skipped:S Errors:E DryRun:D
+    No new slots required; the change is purely behavioural + cosmetic.
+
+Changes in v2.00
+----------------
+  - Version-synced with LinkCreator at v2.00 to reflect the joint
+    feature update across both programs.
+  - NEW slot: maxArchives (baja:Integer, default 10). After every
+    archive operation the program now prunes the oldest timestamped
+    archives so only the N most recent are kept. Applied to both
+    the active log and the results CSV. Set maxArchives = 0 to
+    disable pruning (keep all archives forever).
+        Slot sheet changes required:
+          ADD Property  maxArchives  baja:Integer  default 10
+              Facets: min=0,max=1000,fieldWidth=60
+  - NEW action: cancel. Right-click > Actions > Cancel Run sets a
+    flag that the BQL / CSV row loops check between rows. The
+    current row finishes; the loop then exits cleanly and writes
+    a "RUN CANCELLED" summary to the log + results CSV. Useful
+    when a BQL query against thousands of points was kicked off
+    by mistake.
+        Slot sheet changes required:
+          ADD Action  cancel  void(void)
+              Display Name: Cancel Run
+  - NEW action: pruneArchives. Manual trigger of the same prune
+    logic without running a copy/verify pass. Useful if maxArchives
+    was just lowered and you want to apply it immediately.
+        Slot sheet changes required:
+          ADD Action  pruneArchives  void(void)
+              Display Name: Prune Old Archives
+  - All CSV reads now use explicit UTF-8 instead of the platform
+    default charset (writes were already UTF-8). Fixes garbled
+    accented characters when CSVs are edited on a different OS
+    than the JACE.
+  - 5-column links CSV parser now handles quoted commas correctly
+    (previously line.split(",") would mis-split fields containing
+    commas inside quotes). Plain unquoted CSVs are unaffected.
+
+Changes in v1.04
+----------------
+  - Links-only mode: if componentToCopy and copyTo are both unset
+    but linksCsvPath is configured, the program now skips the
+    mode-execute phase entirely and runs only the link phase.
+    Previously the mode-execute methods would log spurious
+    "componentToCopy not set" errors before the link phase ran.
+    Detection is automatic - no new slots required.
+
+Changes in v1.03
+----------------
+  - createSampleCsv is now an Action instead of a Boolean property.
+    Right-click  >  Actions  >  Create Sample CSV writes the two
+    starter files (copy + links) immediately, with no toggle to
+    remember to flip back.
+      Slot sheet changes required:
+        DELETE the old Property  createSampleCsv  (baja:Boolean)
+        ADD    Action  createSampleCsv  void(void)
+               Display Name: Create Sample CSV
+      The Java handler is onCreateSampleCsv() below.
+
+Changes in v1.02
+----------------
+  - Added Verify action (audit-only, no changes). Verify reports whether
+    a component matching the source name already exists at each
+    destination (Direct / BQL / CSV) and, if linksCsvPath is set, also
+    audits whether the listed links exist. Mirrors the Verify action
+    in the LinkCreator program.
+      Slot to add in the slot sheet:
+         Action  verify   void(void)   Display Name: Verify - Audit
+      The Java handler is onVerify() below.
 
 Changes in v1.01
 ----------------
@@ -31,10 +123,26 @@ Modes
   BQL     Iterate a BQL query - each result row is a destination
   CSV     One destination Ord per row, read from a CSV file
 
+  Special case: if componentToCopy and copyTo are both unset but
+  linksCsvPath is configured, the program runs in links-only mode -
+  skipping the copy phase entirely and processing only the link CSV.
+
 Actions
 -------
-  execute   Run the program in the configured destination mode
-  dryRun    Simulate the run without copying, deleting, or linking
+  execute           Run the program in the configured destination mode
+  dryRun            Simulate the run without copying, deleting, or linking
+  verify            Audit only - check whether the source component
+                    already exists at each destination (and, if
+                    linksCsvPath is set, whether the listed links
+                    exist). Makes no changes.
+  createSampleCsv   Write two starter CSV files (copy destinations +
+                    links) at sampleCsvPath so the user can edit them
+                    in place rather than guessing the format.
+  cancel            Stop the current run after the in-flight row
+                    finishes. Writes a RUN CANCELLED summary.
+  pruneArchives     Apply the maxArchives limit to the log and
+                    results CSV archive folders right now, without
+                    running a copy/verify pass.
 
 Key features
 ------------
@@ -44,11 +152,12 @@ Key features
   - Optional post-copy link phase - if linksCsvPath is set, the program
     reads a 5-column links CSV (same format as LinkCreator) and creates
     the listed links after the copy phase finishes
-  - createSampleCsv writes two starter CSVs (copy + links) so the user
-    can edit them in place rather than guessing the format
+  - createSampleCsv (action) writes two starter CSVs (copy + links) so
+    the user can edit them in place rather than guessing the format
   - Auto-archives the active log AND the results CSV to timestamped
     copies on every run. Archive timestamp reflects the run trigger
-    time.
+    time. Old archives beyond maxArchives are auto-pruned.
+  - Cancel action stops long-running BQL / CSV passes cleanly.
   - quickGuide String slot displays the on-station user help next to
     the configuration slots.
 
@@ -63,22 +172,24 @@ Quick start
 -----------
   1) Set componentToCopy and copyTo
   2) Set destinationMode (Direct / BQL / CSV)
-  3) Optionally set linksCsvPath for a post-copy link phase
-  4) Right-click  >  Actions  >  dryRun   to preview
-  5) Right-click  >  Actions  >  execute  to commit
-  6) Inspect the log file and results CSV for full details
+  3) (Optional) Run Create Sample CSV to get starter CSV files
+  4) (Optional) Set linksCsvPath for a post-copy link phase
+  5) Right-click  >  Actions  >  dryRun   to preview
+  6) Right-click  >  Actions  >  verify   to audit existing state
+  7) Right-click  >  Actions  >  execute  to commit
+  8) Inspect the log file and results CSV for full details
 ================================================================================
 */
 
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("MultiLocationComponentCopier");
 
-private static final String VERSION = "v1.01";
+private static final String VERSION = "v2.01";
 
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "Multi-Location Component Copier " + "v1.01\n" +
+  "Multi-Location Component Copier " + "v2.01\n" +
   "=====================================\n" +
   "\n" +
   "Modes (destinationMode):\n" +
@@ -87,8 +198,19 @@ private static final String QUICK_GUIDE =
   "  CSV     copy source -> each destination ord listed in CSV\n" +
   "\n" +
   "Actions:\n" +
-  "  Execute - run the configured mode\n" +
-  "  Dry Run - preview without changes\n" +
+  "  Execute           - run the configured mode\n" +
+  "  Dry Run           - preview without changes\n" +
+  "  Verify            - audit only: check whether the source\n" +
+  "                      component already exists at each\n" +
+  "                      destination (and whether links from\n" +
+  "                      linksCsvPath are present, if set).\n" +
+  "                      Makes no changes.\n" +
+  "  Create Sample CSV - write starter CSV files (copy + links)\n" +
+  "                      to sampleCsvPath. Edit them in place.\n" +
+  "  Cancel Run        - stop the current run cleanly after the\n" +
+  "                      in-flight row finishes.\n" +
+  "  Prune Old Archives- apply the maxArchives limit right now\n" +
+  "                      without running a copy/verify pass.\n" +
   "\n" +
   "Copy CSV format (one column, header row required):\n" +
   "  DestinationOrd\n" +
@@ -99,25 +221,44 @@ private static final String QUICK_GUIDE =
   "Steps:\n" +
   "  1) Set componentToCopy and copyTo\n" +
   "  2) Choose destinationMode (Direct/BQL/CSV)\n" +
-  "  3) dryRun first to preview\n" +
-  "  4) execute to commit\n" +
-  "  5) check logFilePath and resultsCsvPath for details\n" +
-  "\n" +
-  "  (Optional) \n" +
-  "     1) set createSampleCsv=true and execute to\n" +
-  "        get starter CSVs with example rows\n" +
-  "     2) (Future) linksCsvPath for post-copy link phase \n" +
+  "  3) (optional) Create Sample CSV to get starter files,\n" +
+  "     then edit them and point copyTo / linksCsvPath at them\n" +
+  "  4) dryRun first to preview\n" +
+  "  5) verify  to audit what is already in place\n" +
+  "  6) execute to commit\n" +
+  "  7) check logFilePath and resultsCsvPath for details\n" +
   "\n" +
   "Tips:\n" +
   "  - keepAllLinks=true preserves incoming links on copy\n" +
-  "  - deleteComponent=true removes source-named components\n" +
-  "    instead of copying. dryRun previews delete-mode too.";
+  "  - deleteComponent=true (Reverse Changes) UNDOES a previous\n" +
+  "    run: the link phase removes the listed links FIRST, then\n" +
+  "    the copy phase removes the source-named components from\n" +
+  "    each destination. dryRun previews reverse-mode too.\n" +
+  "  - verify ignores deleteComponent and dryRun toggles -\n" +
+  "    it only audits whether the named component exists.\n" +
+  "  - Links-only mode: leave componentToCopy and copyTo\n" +
+  "    unset and configure linksCsvPath. The copy phase is\n" +
+  "    skipped and only the link CSV is processed (creates in\n" +
+  "    normal mode, removes in reverse mode). Useful when\n" +
+  "    wiring up (or unwiring) pre-existing components.\n" +
+  "  - maxArchives caps how many timestamped log/CSV archives\n" +
+  "    are kept (default 10). 0 = keep all.";
 
 private String now()
 {
   return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
     .format(new java.util.Date());
 }
+
+// ----------------------------------------------------
+// Cancellation flag
+// ----------------------------------------------------
+// Set by onCancel(); checked between rows in the BQL and CSV loops.
+// volatile because the cancel action and the running job may execute
+// on different threads in some Niagara configurations.
+private volatile boolean cancelRequested = false;
+
+private boolean isCancelled() { return cancelRequested; }
 
 // ----------------------------------------------------
 // Slot readers
@@ -177,6 +318,15 @@ private boolean isDryRun()
   return dryRunActive;
 }
 
+// Set by onVerify() to make isVerify() report true for the duration of
+// that one invocation. onExecute() and onDryRun() both reset it on entry.
+private boolean verifyActive = false;
+
+private boolean isVerify()
+{
+  return verifyActive;
+}
+
 private boolean isKeepAllLinks()
 {
   try
@@ -194,18 +344,6 @@ private boolean isDeleteMode()
   try
   {
     Object val = get("deleteComponent");
-    if (val instanceof javax.baja.sys.BBoolean)
-      return ((javax.baja.sys.BBoolean) val).getBoolean();
-  }
-  catch (Exception ignore) {}
-  return false;
-}
-
-private boolean isCreateSampleCsv()
-{
-  try
-  {
-    Object val = get("createSampleCsv");
     if (val instanceof javax.baja.sys.BBoolean)
       return ((javax.baja.sys.BBoolean) val).getBoolean();
   }
@@ -237,6 +375,20 @@ private String resolveLinksCsvPath()
   }
   catch (Exception ignore) {}
   return "";
+}
+
+// Read the maxArchives slot. Returns 10 if the slot is missing or
+// unreadable. 0 (or negative) means "keep all archives, never prune".
+private int resolveMaxArchives()
+{
+  try
+  {
+    Object val = get("maxArchives");
+    if (val instanceof javax.baja.sys.BInteger)
+      return ((javax.baja.sys.BInteger) val).getInt();
+  }
+  catch (Exception ignore) {}
+  return 10;
 }
 
 // Reflection-based setter for the version slot -- avoids a hard
@@ -437,14 +589,87 @@ private void archiveFile(String activePath, String label)
   }
 }
 
+// ----------------------------------------------------
+// Archive pruning
+// After each archive operation, scan the parent folder for archives
+// matching the active file's stem + 19-char timestamp + extension and
+// delete the oldest beyond maxArchives. Names sort lexicographically
+// in chronological order because of the yyyy-MM-dd_HH-mm-ss format.
+// ----------------------------------------------------
+private void pruneArchives(String activePath)
+{
+  try
+  {
+    int max = resolveMaxArchives();
+    if (max <= 0) return; // 0 or negative means keep all
+
+    java.io.File activeFile = resolveToFile(activePath);
+    if (activeFile == null) return;
+
+    java.io.File parent = activeFile.getParentFile();
+    if (parent == null || !parent.isDirectory()) return;
+
+    String fileName = activeFile.getName();
+    int dotIdx = fileName.lastIndexOf('.');
+    final String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
+    final String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
+    final int expectedLen = stem.length() + 1 + 19 + ext.length();
+
+    java.io.File[] all = parent.listFiles(new java.io.FileFilter() {
+      public boolean accept(java.io.File f) {
+        if (!f.isFile()) return false;
+        String n = f.getName();
+        if (n.length() != expectedLen) return false;
+        if (!n.startsWith(stem + "_")) return false;
+        if (ext.length() > 0 && !n.endsWith(ext)) return false;
+        // Defensive: don't ever match the active file itself
+        if (n.equals(stem + ext)) return false;
+        return true;
+      }
+    });
+
+    if (all == null || all.length <= max) return;
+
+    java.util.Arrays.sort(all, new java.util.Comparator() {
+      public int compare(Object a, Object b) {
+        return ((java.io.File) a).getName().compareTo(
+               ((java.io.File) b).getName());
+      }
+    });
+
+    int toDelete = all.length - max;
+    for (int i = 0; i < toDelete; i++)
+    {
+      try
+      {
+        if (all[i].delete())
+          writeToLog("PRUNED archive: " + all[i].getName());
+        else
+          writeToLog("PRUNE WARN: could not delete " + all[i].getName());
+      }
+      catch (Exception e)
+      {
+        writeToLog("PRUNE ERROR: " + all[i].getName() +
+          " - " + e.getMessage());
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog("PRUNE EXCEPTION on " + activePath + " - " + e.getMessage());
+  }
+}
+
 private void archiveLogFile()
 {
   archiveFile(resolveLogPath(), "LOG");
+  pruneArchives(resolveLogPath());
 }
 
 private void archiveResultsCsv()
 {
   archiveFile(resolveResultsCsvPath(), "RESULTS-CSV");
+  pruneArchives(resolveResultsCsvPath());
 }
 
 // ----------------------------------------------------
@@ -471,12 +696,23 @@ private void writeResultsSummary(
   int deleted, long totalMs)
 {
   appendLine(resolveResultsCsvPath(), "");
+  if (isVerify())
+  {
+    // In verify mode the slots are reused as Found/Missing/Errors.
+    writeToResults("Total,Found:" + copied +
+      " Missing:" + skipped +
+      " Errors:" + failed +
+      " TotalTime:" + totalMs + "ms" +
+      (isCancelled() ? " [CANCELLED]" : ""));
+    return;
+  }
   writeToResults("Total,Copied:" + copied +
     " Skipped:" + skipped +
     " Failed:" + failed +
     " DryRun:" + dryrun +
     " Deleted:" + deleted +
-    " TotalTime:" + totalMs + "ms");
+    " TotalTime:" + totalMs + "ms" +
+    (isCancelled() ? " [CANCELLED]" : ""));
 }
 
 private String csvEscape(String s)
@@ -521,13 +757,15 @@ private javax.baja.sys.BComponent makeParams()
 private int countCsvRows(javax.baja.naming.BOrd csvOrd)
 {
   int count = 0;
+  java.io.InputStream is = null;
+  java.io.BufferedReader br = null;
   try
   {
     javax.baja.file.BIFile csvFile =
       (javax.baja.file.BIFile) csvOrd.resolve().get();
-    java.io.InputStream is = csvFile.getInputStream();
-    java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is));
+    is = csvFile.getInputStream();
+    br = new java.io.BufferedReader(
+      new java.io.InputStreamReader(is, "UTF-8"));
     String line;
     int rowNum = 0;
     while ((line = br.readLine()) != null)
@@ -536,10 +774,45 @@ private int countCsvRows(javax.baja.naming.BOrd csvOrd)
       if (rowNum == 1) continue;
       if (!line.trim().isEmpty()) count++;
     }
-    br.close();
-    is.close();
   }
   catch (Exception ignore) {}
+  finally
+  {
+    if (br != null) try { br.close(); } catch (Exception ignore) {}
+    if (is != null) try { is.close(); } catch (Exception ignore) {}
+  }
+  return count;
+}
+
+// Same as countCsvRows but takes a java.io.File directly. Used by the
+// link phase, which reads its CSV via resolveToFile() instead of a
+// BOrd resolution. Lets the link loop pre-count data rows so the
+// status field can show "Link row X of Y..." while it runs.
+private int countLinksCsvRows(java.io.File linksFile)
+{
+  int count = 0;
+  java.io.FileInputStream fis = null;
+  java.io.BufferedReader br = null;
+  try
+  {
+    fis = new java.io.FileInputStream(linksFile);
+    br = new java.io.BufferedReader(
+      new java.io.InputStreamReader(fis, "UTF-8"));
+    String line;
+    int rowNum = 0;
+    while ((line = br.readLine()) != null)
+    {
+      rowNum++;
+      if (rowNum == 1) continue;
+      if (!line.trim().isEmpty()) count++;
+    }
+  }
+  catch (Exception ignore) {}
+  finally
+  {
+    if (br != null) try { br.close(); } catch (Exception ignore) {}
+    if (fis != null) try { fis.close(); } catch (Exception ignore) {}
+  }
   return count;
 }
 
@@ -595,14 +868,73 @@ private String firstCsvField(String line)
   return (comma >= 0) ? s.substring(0, comma).trim() : s;
 }
 
+// Quote-aware CSV row parser. Splits a line into fields on commas
+// but treats commas inside double-quoted fields as literal. Doubled
+// quotes ("") inside a quoted field are unescaped to a single ".
+// Used by the 5-column links CSV reader so slot names that contain
+// commas (when properly quoted) parse correctly. Plain unquoted
+// CSVs are handled the same as before.
+private String[] parseCsvRow(String line)
+{
+  if (line == null) return new String[0];
+  java.util.ArrayList fields = new java.util.ArrayList();
+  java.lang.StringBuilder cur = new java.lang.StringBuilder();
+  boolean inQuote = false;
+  int n = line.length();
+  for (int i = 0; i < n; i++)
+  {
+    char c = line.charAt(i);
+    if (inQuote)
+    {
+      if (c == '"')
+      {
+        if (i + 1 < n && line.charAt(i + 1) == '"')
+        { cur.append('"'); i++; }
+        else
+        { inQuote = false; }
+      }
+      else
+      {
+        cur.append(c);
+      }
+    }
+    else
+    {
+      if (c == ',')
+      {
+        fields.add(cur.toString());
+        cur.setLength(0);
+      }
+      else if (c == '"' && cur.length() == 0)
+      {
+        inQuote = true;
+      }
+      else
+      {
+        cur.append(c);
+      }
+    }
+  }
+  fields.add(cur.toString());
+  String[] out = new String[fields.size()];
+  for (int i = 0; i < fields.size(); i++)
+    out[i] = ((String) fields.get(i)).trim();
+  return out;
+}
+
 private int[] countResult(int[] counts, String result)
 {
   // counts[0]=copied, [1]=skipped, [2]=failed, [3]=dryrun, [4]=deleted
+  // In verify mode the same array is reused as:
+  //   counts[0]=found, [1]=missing, [2]=errors
   if (result.equals("COPIED"))       counts[0]++;
   else if (result.equals("SKIPPED")) counts[1]++;
   else if (result.equals("FAILED"))  counts[2]++;
   else if (result.equals("DRYRUN"))  counts[3]++;
   else if (result.equals("DELETED")) counts[4]++;
+  else if (result.equals("FOUND"))   counts[0]++;
+  else if (result.equals("MISSING")) counts[1]++;
+  else if (result.equals("ERROR"))   counts[2]++;
   return counts;
 }
 
@@ -860,6 +1192,119 @@ private String processCopy(
 }
 
 // ----------------------------------------------------
+// Core processor - verify (audit-only)
+// Checks whether a component with the source's name already exists
+// at the destination. Makes no changes. Returns:
+//   FOUND   -- a child slot named srcName exists at dst
+//   MISSING -- no such child slot at dst
+//   ERROR   -- something went wrong while inspecting the pair
+// ----------------------------------------------------
+private String processVerify(
+  javax.baja.sys.BComponent src,
+  javax.baja.sys.BComponent dst,
+  String mode)
+{
+  String srcName = "";
+  String srcPath = "";
+  String dstName = "";
+  String dstPath = "";
+
+  try
+  {
+    srcName = src.getName().toString();
+    srcPath = src.getSlotPath().toString();
+    dstName = dst.getName().toString();
+    dstPath = dst.getSlotPath().toString();
+  }
+  catch (Exception e)
+  {
+    writeToLog("VERIFY ERROR: could not resolve component names - " +
+      e.getMessage());
+    return "ERROR";
+  }
+
+  long t0 = System.nanoTime();
+
+  try
+  {
+    boolean exists = (dst.getSlot(srcName) != null);
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+      (System.nanoTime() - t0) / 1000000.0);
+
+    if (exists)
+    {
+      String detail = "VERIFY OK: " + srcName + " exists at " + dstName;
+      setStatus("[" + now() + "] " + detail);
+      log.info("[MultiLocationComponentCopier] " + detail);
+      writeToLog(detail);
+      writeToResults(
+        csvEscape(now()) + "," +
+        csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
+        csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
+        "FOUND,Component exists at destination," +
+        csvEscape(mode) + "," +
+        csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
+        durStr);
+      return "FOUND";
+    }
+    else
+    {
+      String detail = "VERIFY MISSING: " + srcName + " not found at " + dstName;
+      setStatus("[" + now() + "] " + detail);
+      log.warning("[MultiLocationComponentCopier] " + detail);
+      writeToLog(detail);
+      writeToResults(
+        csvEscape(now()) + "," +
+        csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
+        csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
+        "MISSING,Component not found at destination," +
+        csvEscape(mode) + "," +
+        csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
+        durStr);
+      return "MISSING";
+    }
+  }
+  catch (Exception e)
+  {
+    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+      (System.nanoTime() - t0) / 1000000.0);
+    String detail = "VERIFY ERROR: " + srcName + " at " + dstName +
+      " - " + e.getMessage();
+    setStatus("[" + now() + "] " + detail);
+    log.severe("[MultiLocationComponentCopier] " + detail);
+    writeToLog(detail);
+    writeToResults(
+      csvEscape(now()) + "," +
+      csvEscape(srcName) + "," + csvEscape(srcPath) + "," +
+      csvEscape(dstName) + "," + csvEscape(dstPath) + "," +
+      "ERROR," + csvEscape(e.getMessage()) + "," +
+      csvEscape(mode) + "," +
+      csvEscape(Boolean.toString(isKeepAllLinks())) + "," +
+      durStr);
+    return "ERROR";
+  }
+}
+
+// Build a one-line summary appropriate for the current run mode.
+// Verify runs report Found/Missing/Errors. Copy/dry-run/delete runs
+// keep the original Copied/Skipped/Failed/DryRun/Deleted layout.
+private String buildSummary(
+  String modeLabel, int[] counts, long totalMs)
+{
+  String tail = (isCancelled() ? " [CANCELLED]" : "");
+  if (isVerify())
+  {
+    return modeLabel + " complete - Found:" + counts[0] +
+      " Missing:" + counts[1] + " Errors:" + counts[2] +
+      " TotalTime:" + totalMs + "ms" + tail;
+  }
+  return modeLabel + " complete - Copied:" + counts[0] +
+    " Skipped:" + counts[1] + " Failed:" + counts[2] +
+    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
+    " TotalTime:" + totalMs + "ms" + tail;
+}
+
+// ----------------------------------------------------
 // Sample CSVs - emit two self-documenting starter files:
 // one for copy-mode destinations, one for the post-copy links CSV.
 // ----------------------------------------------------
@@ -923,7 +1368,9 @@ private String buildLinkName(
     "_to_" + tgtSlotStr + "_" + pathHash;
 }
 
-// Single link result: LINKED / SKIPPED / ERROR / DRYRUN
+// Single link result: LINKED / SKIPPED / ERROR / DRYRUN / FOUND / MISSING / REMOVED
+// (FOUND / MISSING are verify-mode outcomes and never mutate the station.)
+// (REMOVED is a reverse-mode outcome -- the link was deleted from the target.)
 private String processLinkRow(
   javax.baja.sys.BComponent srcComp, String srcSlotStr,
   javax.baja.sys.BComponent tgtComp, String tgtSlotStr)
@@ -932,6 +1379,53 @@ private String processLinkRow(
   {
     String linkName = buildLinkName(srcComp, srcSlotStr, tgtSlotStr);
 
+    // Verify mode: just audit whether the link is already there.
+    if (isVerify())
+    {
+      if (tgtComp.getSlot(linkName) != null)
+      {
+        writeToLog("LINK VERIFY OK: " + srcComp.getName() + "[" + srcSlotStr +
+          "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "] EXISTS");
+        return "FOUND";
+      }
+      writeToLog("LINK VERIFY MISSING: " + srcComp.getName() + "[" +
+        srcSlotStr + "] -> " + tgtComp.getName() + "[" + tgtSlotStr +
+        "] NOT FOUND");
+      return "MISSING";
+    }
+
+    // Reverse mode (deleteComponent=true): remove the listed link instead
+    // of creating it. We look up the link by its deterministic linkName on
+    // the target component (same naming convention as create-mode and
+    // LinkCreator's deleteLinks). Mirrors the delete-mode branch in
+    // LinkCreator.processLink().
+    if (isDeleteMode())
+    {
+      if (tgtComp.getSlot(linkName) == null)
+      {
+        boolean dry = isDryRun();
+        writeToLog((dry ? "LINK DRYRUN (reverse): would skip - link not found --> "
+                        : "LINK SKIPPED (reverse): link not found --> ") +
+          srcComp.getName() + "[" + srcSlotStr + "] -> " +
+          tgtComp.getName() + "[" + tgtSlotStr + "]");
+        return dry ? "DRYRUN" : "SKIPPED";
+      }
+
+      if (isDryRun())
+      {
+        writeToLog("LINK DRYRUN (reverse): would remove --> " +
+          srcComp.getName() + "[" + srcSlotStr + "] -> " +
+          tgtComp.getName() + "[" + tgtSlotStr + "]");
+        return "DRYRUN";
+      }
+
+      tgtComp.remove(linkName);
+      writeToLog("LINK REMOVED: " + srcComp.getName() + "[" + srcSlotStr +
+        "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "]");
+      return "REMOVED";
+    }
+
+    // Create mode (default).
     if (tgtComp.getSlot(linkName) != null)
     {
       boolean dry = isDryRun();
@@ -970,10 +1464,16 @@ private String processLinkRow(
 
 private void executeLinksCsv(String linksCsvPath)
 {
-  writeToLog("--- Processing links CSV: " + linksCsvPath + " ---");
-  setStatus("[" + now() + "] Processing links CSV...");
-  log.info("[MultiLocationComponentCopier] Processing links CSV: " +
-    linksCsvPath);
+  String phaseLabel = isVerify()    ? "Verifying"
+                    : isDeleteMode() ? "Reversing"
+                                     : "Processing";
+
+  writeToLog("--- " + phaseLabel + " links CSV: " + linksCsvPath +
+    (isVerify()    ? " [VERIFY]"  : "") +
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : "") + " ---");
+  setStatus("[" + now() + "] " + phaseLabel + " links CSV...");
+  log.info("[MultiLocationComponentCopier] " + phaseLabel +
+    " links CSV: " + linksCsvPath);
 
   java.io.File linksFile = resolveToFile(linksCsvPath);
   if (linksFile == null || !linksFile.exists())
@@ -983,14 +1483,25 @@ private void executeLinksCsv(String linksCsvPath)
     return;
   }
 
+  // Pre-count data rows so the live status field can show "row X of Y"
+  // while the loop runs. Costs one extra pass over the file but
+  // matches the UX of the copy-mode CSV phase.
+  int totalRows = countLinksCsvRows(linksFile);
+  writeToLog("Links CSV total data rows: " + totalRows);
+
   int linked = 0, skipped = 0, errors = 0, dryrun = 0;
+  int found = 0, missing = 0;
+  int removed = 0;
   int rowNum = 0;
+  int dataRow = 0;
 
   java.io.BufferedReader br = null;
+  java.io.FileInputStream fis = null;
   try
   {
-    br = new java.io.BufferedReader(new java.io.InputStreamReader(
-      new java.io.FileInputStream(linksFile), "UTF-8"));
+    fis = new java.io.FileInputStream(linksFile);
+    br = new java.io.BufferedReader(
+      new java.io.InputStreamReader(fis, "UTF-8"));
     String line;
     while ((line = br.readLine()) != null)
     {
@@ -1000,7 +1511,25 @@ private void executeLinksCsv(String linksCsvPath)
       line = line.trim();
       if (line.isEmpty()) continue;
 
-      String[] cols = line.split(",");
+      // Cancellation checkpoint
+      if (isCancelled())
+      {
+        writeToLog("LINK PHASE CANCELLED at row " + rowNum);
+        break;
+      }
+
+      // Live progress update: shows operators which row is in flight.
+      // Verb matches the phase ("Verifying" / "Reversing" / "Linking")
+      // so the status field self-documents which mode is running.
+      dataRow++;
+      String verb = isVerify()    ? "Verifying"
+                  : isDeleteMode() ? "Reversing"
+                                   : "Linking";
+      setStatus("[" + now() + "] " + verb + " links: row " +
+        dataRow + " of " + totalRows + "...");
+
+      // Quote-aware split so commas inside quoted slot names parse correctly
+      String[] cols = parseCsvRow(line);
       if (cols.length < 5)
       {
         writeToLog("LINK row " + rowNum + " SKIPPED: not enough columns");
@@ -1008,11 +1537,11 @@ private void executeLinksCsv(String linksCsvPath)
         continue;
       }
 
-      String bord1Str  = cols[0].trim();
-      String slot1Str  = cols[1].trim();
-      String direction = cols[2].trim();
-      String bord2Str  = cols[3].trim();
-      String slot2Str  = cols[4].trim();
+      String bord1Str  = cols[0];
+      String slot1Str  = cols[1];
+      String direction = cols[2];
+      String bord2Str  = cols[3];
+      String slot2Str  = cols[4];
 
       try
       {
@@ -1034,9 +1563,12 @@ private void executeLinksCsv(String linksCsvPath)
           continue;
         }
 
-        if (result.equals("LINKED"))      linked++;
+        if (result.equals("LINKED"))       linked++;
+        else if (result.equals("REMOVED"))  removed++;
         else if (result.equals("SKIPPED")) skipped++;
         else if (result.equals("DRYRUN"))  dryrun++;
+        else if (result.equals("FOUND"))   found++;
+        else if (result.equals("MISSING")) missing++;
         else                               errors++;
       }
       catch (Exception e)
@@ -1053,10 +1585,32 @@ private void executeLinksCsv(String linksCsvPath)
   finally
   {
     if (br != null) try { br.close(); } catch (Exception ignore) {}
+    if (fis != null) try { fis.close(); } catch (Exception ignore) {}
   }
 
-  String linkSummary = "Links phase complete - Linked:" + linked +
-    " Skipped:" + skipped + " Errors:" + errors + " DryRun:" + dryrun;
+  String tail = isCancelled() ? " [CANCELLED]" : "";
+  String linkSummary;
+  if (isVerify())
+  {
+    linkSummary = "Links verify complete - Found:" + found +
+      " Missing:" + missing + " Errors:" + errors + tail;
+  }
+  else if (isDeleteMode())
+  {
+    // Reverse-mode link phase: report removals, not creations. This is
+    // what fixes the misleading "Errors:N" summary that used to show up
+    // when reverse-mode tried to create links to already-deleted
+    // components.
+    linkSummary = "Links phase complete (reverse) - Removed:" + removed +
+      " Skipped:" + skipped + " Errors:" + errors +
+      " DryRun:" + dryrun + tail;
+  }
+  else
+  {
+    linkSummary = "Links phase complete - Linked:" + linked +
+      " Skipped:" + skipped + " Errors:" + errors +
+      " DryRun:" + dryrun + tail;
+  }
   writeToLog(linkSummary);
   setStatus("[" + now() + "] " + linkSummary);
   log.info("[MultiLocationComponentCopier] " + linkSummary);
@@ -1068,8 +1622,9 @@ private void executeLinksCsv(String linksCsvPath)
 private void executeDirect(long runStart) throws Exception
 {
   writeToLog("Mode: DIRECT" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE]" : ""));
+    (isVerify()  ? " [VERIFY]"  : "") +
+    (isDryRun()  ? " [DRY RUN]" : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
   log.info("[MultiLocationComponentCopier] Mode: DIRECT");
 
   javax.baja.naming.BOrd srcOrd = getComponentToCopy();
@@ -1098,14 +1653,13 @@ private void executeDirect(long runStart) throws Exception
   setStatus("[" + now() + "] Processing 1 of 1...");
 
   int[] counts = new int[5];
-  String result = processCopy(src, dst, "Direct");
+  String result = isVerify()
+    ? processVerify(src, dst, "Direct")
+    : processCopy(src, dst, "Direct");
   countResult(counts, result);
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
-  String summary = "Direct complete - Copied:" + counts[0] +
-    " Skipped:" + counts[1] + " Failed:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms";
+  String summary = buildSummary("Direct", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   writeToLog(summary);
   writeResultsSummary(
@@ -1118,8 +1672,9 @@ private void executeDirect(long runStart) throws Exception
 private void executeBQL(long runStart) throws Exception
 {
   writeToLog("Mode: BQL" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE]" : ""));
+    (isVerify()  ? " [VERIFY]"  : "") +
+    (isDryRun()  ? " [DRY RUN]" : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
   log.info("[MultiLocationComponentCopier] Mode: BQL");
 
   javax.baja.naming.BOrd srcOrd = getComponentToCopy();
@@ -1164,6 +1719,14 @@ private void executeBQL(long runStart) throws Exception
       while (((Boolean) nextMethod.invoke(cursor)).booleanValue())
       {
         rowNum++;
+
+        // Cancellation checkpoint
+        if (isCancelled())
+        {
+          writeToLog("BQL RUN CANCELLED before row " + rowNum);
+          break;
+        }
+
         try
         {
           Object rowObj = getMethod.invoke(cursor);
@@ -1181,7 +1744,9 @@ private void executeBQL(long runStart) throws Exception
             (javax.baja.sys.BComponent) rowObj;
           setStatus("[" + now() + "] BQL processing row " + rowNum + "...");
           writeToLog("BQL Destination " + rowNum + ": " + dst.getName());
-          String result = processCopy(src, dst, "BQL");
+          String result = isVerify()
+            ? processVerify(src, dst, "BQL")
+            : processCopy(src, dst, "BQL");
           countResult(counts, result);
         }
         catch (Exception e)
@@ -1201,10 +1766,7 @@ private void executeBQL(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
-  String summary = "BQL complete - Copied:" + counts[0] +
-    " Skipped:" + counts[1] + " Failed:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms";
+  String summary = buildSummary("BQL", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   log.info("[MultiLocationComponentCopier] " + summary);
   writeToLog(summary);
@@ -1218,8 +1780,9 @@ private void executeBQL(long runStart) throws Exception
 private void executeCSV(long runStart) throws Exception
 {
   writeToLog("Mode: CSV" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE]" : ""));
+    (isVerify()  ? " [VERIFY]"  : "") +
+    (isDryRun()  ? " [DRY RUN]" : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
   log.info("[MultiLocationComponentCopier] Mode: CSV");
 
   javax.baja.naming.BOrd csvOrd = resolveCsvOrd();
@@ -1250,7 +1813,7 @@ private void executeCSV(long runStart) throws Exception
     (javax.baja.file.BIFile) csvOrd.resolve().get();
   java.io.InputStream is = csvFile.getInputStream();
   java.io.BufferedReader br = new java.io.BufferedReader(
-    new java.io.InputStreamReader(is));
+    new java.io.InputStreamReader(is, "UTF-8"));
 
   int[] counts = new int[5];
   int rowNum = 0;
@@ -1280,6 +1843,13 @@ private void executeCSV(long runStart) throws Exception
 
       line = line.trim();
       if (line.isEmpty()) continue;
+
+      // Cancellation checkpoint
+      if (isCancelled())
+      {
+        writeToLog("CSV RUN CANCELLED before row " + rowNum);
+        break;
+      }
 
       dataRow++;
       setStatus("[" + now() + "] CSV: processing row " +
@@ -1321,7 +1891,9 @@ private void executeCSV(long runStart) throws Exception
         writeToLog("CSV row " + rowNum + ": " +
           src.getName() + " -> " + dst.getName());
 
-        String result = processCopy(src, dst, "CSV");
+        String result = isVerify()
+          ? processVerify(src, dst, "CSV")
+          : processCopy(src, dst, "CSV");
         countResult(counts, result);
       }
       catch (Exception e)
@@ -1340,10 +1912,7 @@ private void executeCSV(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
-  String summary = "CSV complete - Copied:" + counts[0] +
-    " Skipped:" + counts[1] + " Failed:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms";
+  String summary = buildSummary("CSV", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   log.info("[MultiLocationComponentCopier] " + summary);
   writeToLog(summary);
@@ -1364,14 +1933,94 @@ public void onStart() throws Exception
 public void onExecute() throws Exception
 {
   dryRunActive = false;
+  verifyActive = false;
+  cancelRequested = false;
   runJob();
 }
 
 public void onDryRun() throws Exception
 {
   dryRunActive = true;
+  verifyActive = false;
+  cancelRequested = false;
   try { runJob(); }
   finally { dryRunActive = false; }
+}
+
+public void onVerify() throws Exception
+{
+  // Verify is audit-only: it must never copy, delete, or create links,
+  // so we make sure dry-run is off (verify uses its own no-mutation
+  // path, not the dry-run preview path) and verifyActive is set for
+  // the duration of this invocation.
+  dryRunActive = false;
+  verifyActive = true;
+  cancelRequested = false;
+  try { runJob(); }
+  finally { verifyActive = false; }
+}
+
+// Set the cancel flag. The currently running BQL / CSV row loop will
+// notice between rows and exit cleanly; the in-flight row finishes
+// first to avoid leaving a half-copied component.
+public void onCancel() throws Exception
+{
+  cancelRequested = true;
+  String msg = "Cancel requested - run will stop after current row";
+  setStatus("[" + now() + "] " + msg);
+  log.info("[MultiLocationComponentCopier] " + msg);
+  writeToLog(msg);
+}
+
+// Manual archive prune. Useful right after lowering maxArchives,
+// without having to wait for the next execute / dryRun / verify run.
+public void onPruneArchives() throws Exception
+{
+  String startMsg = "Manual prune requested (maxArchives=" +
+    resolveMaxArchives() + ")";
+  setStatus("[" + now() + "] " + startMsg);
+  log.info("[MultiLocationComponentCopier] " + startMsg);
+  writeToLog(startMsg);
+
+  pruneArchives(resolveLogPath());
+  pruneArchives(resolveResultsCsvPath());
+
+  String done = "Prune complete (kept up to " +
+    resolveMaxArchives() + " of each)";
+  setStatus("[" + now() + "] " + done);
+  log.info("[MultiLocationComponentCopier] " + done);
+  writeToLog(done);
+}
+
+// Write the two starter CSVs (copy destinations + links) to the path
+// defined by sampleCsvPath. Pure side-effect on disk -- no copy, no
+// delete, no link work, no archiving of the active log/results.
+public void onCreateSampleCsv() throws Exception
+{
+  dryRunActive = false;
+  verifyActive = false;
+  cancelRequested = false;
+
+  setStatus("[" + now() + "] Writing sample CSV files...");
+  log.info("[MultiLocationComponentCopier] onCreateSampleCsv triggered");
+  writeToLog(VERSION + " onCreateSampleCsv triggered");
+
+  try
+  {
+    writeSampleCsvs();
+    String msg = "Sample CSVs written. Edit them in place, then point " +
+      "copyTo (and optionally linksCsvPath) at the edited files.";
+    setStatus("[" + now() + "] " + msg);
+    writeToLog(msg);
+    log.info("[MultiLocationComponentCopier] " + msg);
+  }
+  catch (Exception e)
+  {
+    String detail = "SAMPLE CSV ERROR: " + e.getMessage();
+    setStatus("[" + now() + "] " + detail);
+    log.severe("[MultiLocationComponentCopier] " + detail);
+    writeToLog(detail);
+  }
 }
 
 private void runJob() throws Exception
@@ -1381,45 +2030,100 @@ private void runJob() throws Exception
   archiveLogFile();
   initResultsCsv();
 
-  log.info("[MultiLocationComponentCopier] " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered");
-  writeToLog(VERSION + " " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE MODE]" : ""));
+  String trigger = isVerify() ? "onVerify"
+                  : isDryRun() ? "onDryRun"
+                               : "onExecute";
+  log.info("[MultiLocationComponentCopier] " + trigger + " triggered");
+  writeToLog(VERSION + " " + trigger + " triggered" +
+    (isVerify()  ? " [VERIFY]"   : "") +
+    (isDryRun()  ? " [DRY RUN]"  : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE MODE]" : ""));
 
-  // Sample-CSV short-circuit: write the starter files and stop here so
-  // the user can edit them before running for real.
-  if (isCreateSampleCsv())
+  // ----------------------------------------------------
+  // Links-only detection
+  // ----------------------------------------------------
+  // If componentToCopy and copyTo are both unset but linksCsvPath
+  // is configured, skip the mode-execute phase entirely and run
+  // only the link phase. This lets the program be used as a
+  // links-only tool against pre-existing components, without the
+  // mode-execute methods logging spurious "componentToCopy not set"
+  // errors before the link phase runs.
+  String linksPath = resolveLinksCsvPath();
+  boolean linksConfigured = (linksPath != null && linksPath.length() > 0);
+
+  boolean srcEmpty = true;
+  boolean dstEmpty = true;
+  try
   {
-    writeSampleCsvs();
-    String msg = "Sample CSV mode - wrote samples and exited. " +
-      "Set createSampleCsv to false to run normally.";
-    setStatus("[" + now() + "] " + msg);
-    writeToLog(msg);
-    return;
+    javax.baja.naming.BOrd srcOrd = getComponentToCopy();
+    javax.baja.naming.BOrd dstOrd = getCopyTo();
+    srcEmpty = (srcOrd == null || srcOrd.isNull());
+    dstEmpty = (dstOrd == null || dstOrd.isNull());
   }
+  catch (Exception ignore) {}
 
-  int mode = getModeOrdinal();
-  writeToLog("Operation mode: " + mode +
-    " (raw: " + getDestinationMode().toString() + ")");
+  boolean linksOnly = srcEmpty && dstEmpty && linksConfigured;
+
+  // Pre-compute mode and log it only when a copy phase will run.
+  // In links-only mode the destinationMode setting is irrelevant.
+  int mode = -1;
+  if (!linksOnly)
+  {
+    mode = getModeOrdinal();
+    writeToLog("Operation mode: " + mode +
+      " (raw: " + getDestinationMode().toString() + ")");
+  }
+  else
+  {
+    String msg = "Links-only mode - componentToCopy and copyTo are " +
+      "both unset; running link phase only";
+    setStatus("[" + now() + "] " + msg);
+    log.info("[MultiLocationComponentCopier] " + msg);
+    writeToLog(msg);
+  }
 
   try
   {
-    if (mode == 0)      executeDirect(runStart);
-    else if (mode == 1) executeBQL(runStart);
-    else if (mode == 2) executeCSV(runStart);
-    else
+    // ----------------------------------------------------
+    // Phase ordering
+    // ----------------------------------------------------
+    // Normal (create) mode  : copy phase first, then link phase
+    //   -- copies must exist before links can target them.
+    // Reverse (delete) mode : link phase FIRST, then component delete
+    //   -- links must be removed while their target components still
+    //      exist, otherwise the link-name lookups fail and we get
+    //      spurious "Errors:N" in the link-phase summary.
+    // Verify mode           : same as normal (verify is read-only).
+    // Links-only mode       : copy phase is skipped entirely; the link
+    //                         phase still respects deleteMode for the
+    //                         create-vs-remove decision.
+
+    boolean reverse = isDeleteMode() && !isVerify();
+
+    // ---- REVERSE MODE: link phase first ----
+    if (reverse && linksConfigured && !isCancelled())
+      executeLinksCsv(linksPath);
+
+    // ---- Copy / verify / delete phase (skipped in links-only mode) ----
+    if (!linksOnly && !isCancelled())
     {
-      String msg = "[" + now() + "] ERROR: unknown destinationMode " + mode;
-      setStatus(msg);
-      log.warning("[MultiLocationComponentCopier] " + msg);
-      writeToLog(msg);
+      if (mode == 0)      executeDirect(runStart);
+      else if (mode == 1) executeBQL(runStart);
+      else if (mode == 2) executeCSV(runStart);
+      else
+      {
+        String msg = "[" + now() + "] ERROR: unknown destinationMode " + mode;
+        setStatus(msg);
+        log.warning("[MultiLocationComponentCopier] " + msg);
+        writeToLog(msg);
+      }
     }
 
-    // Optional post-copy link phase: if linksCsvPath is set,
-    // process it the same way LinkCreator's CSV mode does.
-    String linksPath = resolveLinksCsvPath();
-    if (linksPath != null && linksPath.length() > 0)
+    // ---- NORMAL / VERIFY MODE: link phase last ----
+    if (!reverse && linksConfigured && !isCancelled())
       executeLinksCsv(linksPath);
+    else if (linksConfigured && isCancelled())
+      writeToLog("LINK PHASE SKIPPED - run was cancelled");
   }
   catch (Exception e)
   {
