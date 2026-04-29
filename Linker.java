@@ -2,8 +2,63 @@
 ================================================================================
 Program: LinkCreator (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.01
-Date:    2026-04-28
+Version: v2.01
+Date:    2026-04-29
+
+Changes in v2.01
+----------------
+  - Version-synced with ComponentCopier at v2.01. No behavioural
+    changes to LinkCreator itself; the version bump is purely to
+    keep the two programs aligned. The corresponding ComponentCopier
+    v2.01 release fixes its reverse-mode link handling so it removes
+    links before deleting components, and adds live row progress
+    in the status field during the link phase. LinkCreator already
+    had per-row status updates in CSV mode, so no equivalent change
+    was needed here.
+
+Changes in v2.00
+----------------
+  - Version-synced with ComponentCopier at v2.00 to reflect the joint
+    feature update across both programs.
+  - NEW slot: maxArchives (baja:Integer, default 10). After every
+    archive operation the program now prunes the oldest timestamped
+    archives so only the N most recent are kept. Applied to both
+    the active log and the results CSV. Set maxArchives = 0 to
+    disable pruning (keep all archives forever).
+        Slot sheet changes required:
+          ADD Property  maxArchives  baja:Integer  default 10
+              Facets: min=0,max=1000,fieldWidth=60
+  - NEW action: cancel. Right-click > Actions > Cancel Run sets a
+    flag that the BQL / CSV row loops check between rows. The
+    current row finishes; the loop then exits cleanly and writes
+    a "RUN CANCELLED" summary to the log + results CSV.
+        Slot sheet changes required:
+          ADD Action  cancel  void(void)
+              Display Name: Cancel Run
+  - NEW action: pruneArchives. Manual trigger of the same prune
+    logic without running a copy/verify pass. Useful if maxArchives
+    was just lowered and you want to apply it immediately.
+        Slot sheet changes required:
+          ADD Action  pruneArchives  void(void)
+              Display Name: Prune Old Archives
+  - All CSV reads now use explicit UTF-8 instead of the platform
+    default charset (writes were already UTF-8). Fixes garbled
+    accented characters when CSVs are edited on a different OS
+    than the JACE.
+  - 5-column CSV parser now handles quoted commas correctly
+    (previously line.split(",") would mis-split fields containing
+    commas inside quotes). Plain unquoted CSVs are unaffected.
+
+Changes in v1.02
+----------------
+  - createSampleCsv is now an Action instead of a Boolean property.
+    Right-click  >  Actions  >  Create Sample CSV writes the starter
+    file immediately, with no toggle to remember to flip back.
+      Slot sheet changes required:
+        DELETE the old Property  createSampleCsv  (baja:Boolean)
+        ADD    Action  createSampleCsv  void(void)
+               Display Name: Create Sample CSV
+      The Java handler is onCreateSampleCsv() below.
 
 Changes in v1.01
 ----------------
@@ -28,21 +83,31 @@ Modes
 
 Actions
 -------
-  execute   Run the program in the configured operation mode
-  dryRun    Simulate the run without creating or deleting any links
-  verify    Check that expected links exist (no changes made)
+  execute           Run the program in the configured operation mode
+  dryRun            Simulate the run without creating or deleting any links
+  verify            Check that expected links exist (no changes made)
+  createSampleCsv   Write a starter CSV file to sampleCsvPath so the
+                    user can edit it in place rather than guessing
+                    the format.
+  cancel            Stop the current run after the in-flight row
+                    finishes. Writes a RUN CANCELLED summary.
+  pruneArchives     Apply the maxArchives limit to the log and
+                    results CSV archive folders right now, without
+                    running a link/verify pass.
 
 Key features
 ------------
   - Auto-archives the active log AND the results CSV to timestamped
     copies on every run so the user retains a full run history. Archive
-    timestamp reflects the run trigger time.
-  - Self-documenting CSV format: createSampleCsv writes a starter file
-    with example rows the user can edit in place.
+    timestamp reflects the run trigger time. Old archives beyond
+    maxArchives are auto-pruned.
+  - Self-documenting CSV format: createSampleCsv (action) writes a
+    starter file with example rows the user can edit in place.
   - Unique link-name hash suffix prevents collisions when two source
     components share the same display name.
   - dryRun previews are reported as DRYRUN with full skip-reason detail
     so summary counts always reflect what was previewed.
+  - Cancel action stops long-running BQL / CSV passes cleanly.
   - All output paths (log, archive, results CSV, sample CSV) are
     user-configurable Ord slots; archive log inherits the active log's
     name with the run timestamp appended.
@@ -59,20 +124,22 @@ Outputs
 Quick start
 -----------
   1) Set operationMode (Direct / BQL / CSV) and configure ords + slots
-  2) Right-click  >  Actions  >  dryRun   to preview
-  3) Right-click  >  Actions  >  execute  to commit
-  4) Inspect the log file and results CSV for full details
+  2) (Optional) Run Create Sample CSV to get a starter CSV file
+  3) Right-click  >  Actions  >  dryRun   to preview
+  4) Right-click  >  Actions  >  verify   to audit existing links
+  5) Right-click  >  Actions  >  execute  to commit
+  6) Inspect the log file and results CSV for full details
 ================================================================================
 */
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("LinkCreator");
 
-private static final String VERSION = "v1.01";
+private static final String VERSION = "v2.01";
 
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "LinkCreator " + "v1.01\n" +
+  "LinkCreator " + "v2.01\n" +
   "=====================================\n" +
   "\n" +
   "Modes (operationMode):\n" +
@@ -81,9 +148,15 @@ private static final String QUICK_GUIDE =
   "  CSV     source/target pairs from a 5-col CSV\n" +
   "\n" +
   "Actions:\n" +
-  "  Execute - run the configured mode\n" +
-  "  Dry Run - preview without changes\n" +
-  "  Verify  - confirm expected links exist\n" +
+  "  Execute           - run the configured mode\n" +
+  "  Dry Run           - preview without changes\n" +
+  "  Verify            - confirm expected links exist\n" +
+  "  Create Sample CSV - write a starter CSV to sampleCsvPath.\n" +
+  "                      Edit it in place.\n" +
+  "  Cancel Run        - stop the current run cleanly after the\n" +
+  "                      in-flight row finishes.\n" +
+  "  Prune Old Archives- apply the maxArchives limit right now\n" +
+  "                      without running a link/verify pass.\n" +
   "\n" +
   "CSV format (5 columns, header row required):\n" +
   "  BOrd1, Slot1, Direction, BOrd2, Slot2\n" +
@@ -91,20 +164,33 @@ private static final String QUICK_GUIDE =
   "\n" +
   "Steps:\n" +
   "  1) Choose operationMode and configure ords + slots\n" +
-  "  2) (optional) set createSampleCsv=true and execute to\n" +
-  "     get a starter CSV with example rows\n" +
+  "  2) (optional) Create Sample CSV to get a starter file,\n" +
+  "     then edit it and point the program at it (CSV mode)\n" +
   "  3) dryRun first to preview\n" +
   "  4) execute to commit\n" +
   "  5) check logFilePath and resultsCsvPath for details\n" +
   "\n" +
-  "Tip: set deleteLinks=true to remove links instead of\n" +
-  "     creating them. Dry Run previews delete-mode as well.";
+  "Tips:\n" +
+  "  - set deleteLinks=true to remove links instead of\n" +
+  "    creating them. Dry Run previews delete-mode as well.\n" +
+  "  - maxArchives caps how many timestamped log/CSV archives\n" +
+  "    are kept (default 10). 0 = keep all.";
 
 private String now()
 {
   return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
     .format(new java.util.Date());
 }
+
+// ----------------------------------------------------
+// Cancellation flag
+// ----------------------------------------------------
+// Set by onCancel(); checked between rows in the BQL and CSV loops.
+// volatile because the cancel action and the running job may execute
+// on different threads in some Niagara configurations.
+private volatile boolean cancelRequested = false;
+
+private boolean isCancelled() { return cancelRequested; }
 
 // ----------------------------------------------------
 // Slot readers
@@ -176,18 +262,6 @@ private boolean isDeleteMode()
   return false;
 }
 
-private boolean isCreateSampleCsv()
-{
-  try
-  {
-    Object val = get("createSampleCsv");
-    if (val instanceof javax.baja.sys.BBoolean)
-      return ((javax.baja.sys.BBoolean) val).getBoolean();
-  }
-  catch (Exception ignore) {}
-  return false;
-}
-
 private String resolveSampleCsvPath()
 {
   try
@@ -197,6 +271,20 @@ private String resolveSampleCsvPath()
   }
   catch (Exception ignore) {}
   return "file:^logs/LinkCreator_SAMPLE.csv";
+}
+
+// Read the maxArchives slot. Returns 10 if the slot is missing or
+// unreadable. 0 (or negative) means "keep all archives, never prune".
+private int resolveMaxArchives()
+{
+  try
+  {
+    Object val = get("maxArchives");
+    if (val instanceof javax.baja.sys.BInteger)
+      return ((javax.baja.sys.BInteger) val).getInt();
+  }
+  catch (Exception ignore) {}
+  return 10;
 }
 
 // Reflection-based setter for the version slot -- avoids a hard
@@ -397,14 +485,87 @@ private void archiveFile(String activePath, String label)
   }
 }
 
+// ----------------------------------------------------
+// Archive pruning
+// After each archive operation, scan the parent folder for archives
+// matching the active file's stem + 19-char timestamp + extension and
+// delete the oldest beyond maxArchives. Names sort lexicographically
+// in chronological order because of the yyyy-MM-dd_HH-mm-ss format.
+// ----------------------------------------------------
+private void pruneArchives(String activePath)
+{
+  try
+  {
+    int max = resolveMaxArchives();
+    if (max <= 0) return; // 0 or negative means keep all
+
+    java.io.File activeFile = resolveToFile(activePath);
+    if (activeFile == null) return;
+
+    java.io.File parent = activeFile.getParentFile();
+    if (parent == null || !parent.isDirectory()) return;
+
+    String fileName = activeFile.getName();
+    int dotIdx = fileName.lastIndexOf('.');
+    final String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
+    final String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
+    final int expectedLen = stem.length() + 1 + 19 + ext.length();
+
+    java.io.File[] all = parent.listFiles(new java.io.FileFilter() {
+      public boolean accept(java.io.File f) {
+        if (!f.isFile()) return false;
+        String n = f.getName();
+        if (n.length() != expectedLen) return false;
+        if (!n.startsWith(stem + "_")) return false;
+        if (ext.length() > 0 && !n.endsWith(ext)) return false;
+        // Defensive: don't ever match the active file itself
+        if (n.equals(stem + ext)) return false;
+        return true;
+      }
+    });
+
+    if (all == null || all.length <= max) return;
+
+    java.util.Arrays.sort(all, new java.util.Comparator() {
+      public int compare(Object a, Object b) {
+        return ((java.io.File) a).getName().compareTo(
+               ((java.io.File) b).getName());
+      }
+    });
+
+    int toDelete = all.length - max;
+    for (int i = 0; i < toDelete; i++)
+    {
+      try
+      {
+        if (all[i].delete())
+          writeToLog("PRUNED archive: " + all[i].getName());
+        else
+          writeToLog("PRUNE WARN: could not delete " + all[i].getName());
+      }
+      catch (Exception e)
+      {
+        writeToLog("PRUNE ERROR: " + all[i].getName() +
+          " - " + e.getMessage());
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog("PRUNE EXCEPTION on " + activePath + " - " + e.getMessage());
+  }
+}
+
 private void archiveLogFile()
 {
   archiveFile(resolveLogPath(), "LOG");
+  pruneArchives(resolveLogPath());
 }
 
 private void archiveResultsCsv()
 {
   archiveFile(resolveResultsCsvPath(), "RESULTS-CSV");
+  pruneArchives(resolveResultsCsvPath());
 }
 
 // ----------------------------------------------------
@@ -462,7 +623,8 @@ private void writeResultsSummary(
     " Errors:" + errors +
     " DryRun:" + dryrun +
     " Deleted:" + deleted +
-    " TotalTime:" + totalMs + "ms");
+    " TotalTime:" + totalMs + "ms" +
+    (isCancelled() ? " [CANCELLED]" : ""));
 }
 
 private String csvEscape(String s)
@@ -542,13 +704,15 @@ private javax.baja.naming.BOrd resolveCsvOrd() throws Exception
 private int countCsvRows(javax.baja.naming.BOrd csvOrd)
 {
   int count = 0;
+  java.io.InputStream is = null;
+  java.io.BufferedReader br = null;
   try
   {
     javax.baja.file.BIFile csvFile =
       (javax.baja.file.BIFile) csvOrd.resolve().get();
-    java.io.InputStream is = csvFile.getInputStream();
-    java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is));
+    is = csvFile.getInputStream();
+    br = new java.io.BufferedReader(
+      new java.io.InputStreamReader(is, "UTF-8"));
     String line;
     int rowNum = 0;
     while ((line = br.readLine()) != null)
@@ -557,23 +721,82 @@ private int countCsvRows(javax.baja.naming.BOrd csvOrd)
       if (rowNum == 1) continue;
       if (!line.trim().isEmpty()) count++;
     }
-    br.close();
-    is.close();
   }
   catch (Exception ignore) {}
+  finally
+  {
+    if (br != null) try { br.close(); } catch (Exception ignore) {}
+    if (is != null) try { is.close(); } catch (Exception ignore) {}
+  }
   return count;
+}
+
+// Quote-aware CSV row parser. Splits a line into fields on commas
+// but treats commas inside double-quoted fields as literal. Doubled
+// quotes ("") inside a quoted field are unescaped to a single ".
+// Used by the 5-column CSV reader so slot names that contain
+// commas (when properly quoted) parse correctly. Plain unquoted
+// CSVs are handled the same as before.
+private String[] parseCsvRow(String line)
+{
+  if (line == null) return new String[0];
+  java.util.ArrayList fields = new java.util.ArrayList();
+  java.lang.StringBuilder cur = new java.lang.StringBuilder();
+  boolean inQuote = false;
+  int n = line.length();
+  for (int i = 0; i < n; i++)
+  {
+    char c = line.charAt(i);
+    if (inQuote)
+    {
+      if (c == '"')
+      {
+        if (i + 1 < n && line.charAt(i + 1) == '"')
+        { cur.append('"'); i++; }
+        else
+        { inQuote = false; }
+      }
+      else
+      {
+        cur.append(c);
+      }
+    }
+    else
+    {
+      if (c == ',')
+      {
+        fields.add(cur.toString());
+        cur.setLength(0);
+      }
+      else if (c == '"' && cur.length() == 0)
+      {
+        inQuote = true;
+      }
+      else
+      {
+        cur.append(c);
+      }
+    }
+  }
+  fields.add(cur.toString());
+  String[] out = new String[fields.size()];
+  for (int i = 0; i < fields.size(); i++)
+    out[i] = ((String) fields.get(i)).trim();
+  return out;
 }
 
 private java.util.List validateCsv(javax.baja.naming.BOrd csvOrd)
 {
   java.util.List errors = new java.util.ArrayList();
+  java.io.InputStream is = null;
+  java.io.BufferedReader br = null;
   try
   {
     javax.baja.file.BIFile csvFile =
       (javax.baja.file.BIFile) csvOrd.resolve().get();
-    java.io.InputStream is = csvFile.getInputStream();
-    java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is));
+    is = csvFile.getInputStream();
+    br = new java.io.BufferedReader(
+      new java.io.InputStreamReader(is, "UTF-8"));
     String line;
     int rowNum = 0;
 
@@ -584,16 +807,16 @@ private java.util.List validateCsv(javax.baja.naming.BOrd csvOrd)
       line = line.trim();
       if (line.isEmpty()) continue;
 
-      String[] cols = line.split(",");
+      String[] cols = parseCsvRow(line);
       if (cols.length < 5)
       {
         errors.add("Row " + rowNum + ": not enough columns");
         continue;
       }
 
-      String bord1Str  = cols[0].trim();
-      String direction = cols[2].trim();
-      String bord2Str  = cols[3].trim();
+      String bord1Str  = cols[0];
+      String direction = cols[2];
+      String bord2Str  = cols[3];
 
       if (!direction.equals(">") && !direction.equals("<"))
         errors.add("Row " + rowNum + ": invalid direction '" + direction + "'");
@@ -618,12 +841,15 @@ private java.util.List validateCsv(javax.baja.naming.BOrd csvOrd)
           bord2Str + "': " + e.getMessage());
       }
     }
-    br.close();
-    is.close();
   }
   catch (Exception e)
   {
     errors.add("CSV read error: " + e.getMessage());
+  }
+  finally
+  {
+    if (br != null) try { br.close(); } catch (Exception ignore) {}
+    if (is != null) try { is.close(); } catch (Exception ignore) {}
   }
   return errors;
 }
@@ -705,6 +931,14 @@ private void verifyLinks() throws Exception
       while (((Boolean) nextMethod.invoke(cursor)).booleanValue())
       {
         rowNum++;
+
+        // Cancellation checkpoint
+        if (isCancelled())
+        {
+          writeToLog("VERIFY CANCELLED before row " + rowNum);
+          break;
+        }
+
         try
         {
           javax.baja.sys.BComponent tgtComp =
@@ -746,7 +980,7 @@ private void verifyLinks() throws Exception
       (javax.baja.file.BIFile) csvOrd.resolve().get();
     java.io.InputStream is = csvFile.getInputStream();
     java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is));
+      new java.io.InputStreamReader(is, "UTF-8"));
 
     int rowNum = 0;
     String line;
@@ -759,14 +993,21 @@ private void verifyLinks() throws Exception
         line = line.trim();
         if (line.isEmpty()) continue;
 
-        String[] cols = line.split(",");
+        // Cancellation checkpoint
+        if (isCancelled())
+        {
+          writeToLog("VERIFY CANCELLED before row " + rowNum);
+          break;
+        }
+
+        String[] cols = parseCsvRow(line);
         if (cols.length < 5) continue;
 
-        String bord1Str  = cols[0].trim();
-        String slot1Str  = cols[1].trim();
-        String direction = cols[2].trim();
-        String bord2Str  = cols[3].trim();
-        String slot2Str  = cols[4].trim();
+        String bord1Str  = cols[0];
+        String slot1Str  = cols[1];
+        String direction = cols[2];
+        String bord2Str  = cols[3];
+        String slot2Str  = cols[4];
 
         try
         {
@@ -813,7 +1054,8 @@ private void verifyLinks() throws Exception
   }
 
   String summary = "VERIFY complete - Found:" + found +
-    " Missing:" + missing + " Errors:" + errors;
+    " Missing:" + missing + " Errors:" + errors +
+    (isCancelled() ? " [CANCELLED]" : "");
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
@@ -1008,10 +1250,11 @@ private void executeDirect(long runStart) throws Exception
   countResult(counts, result);
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
+  String tail = isCancelled() ? " [CANCELLED]" : "";
   String summary = "Direct complete - Linked:" + counts[0] +
     " Skipped:" + counts[1] + " Errors:" + counts[2] +
     " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms";
+    " TotalTime:" + totalMs + "ms" + tail;
   setStatus("[" + now() + "] " + summary);
   writeToLog(summary);
   writeResultsSummary(
@@ -1070,6 +1313,14 @@ private void executeBQL(long runStart) throws Exception
       while (((Boolean) nextMethod.invoke(cursor)).booleanValue())
       {
         rowNum++;
+
+        // Cancellation checkpoint
+        if (isCancelled())
+        {
+          writeToLog("BQL RUN CANCELLED before row " + rowNum);
+          break;
+        }
+
         try
         {
           javax.baja.sys.BComponent tgtComp =
@@ -1097,10 +1348,11 @@ private void executeBQL(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
+  String tail = isCancelled() ? " [CANCELLED]" : "";
   String summary = "BQL complete - Linked:" + counts[0] +
     " Skipped:" + counts[1] + " Errors:" + counts[2] +
     " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms";
+    " TotalTime:" + totalMs + "ms" + tail;
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
@@ -1152,7 +1404,7 @@ private void executeCSV(long runStart) throws Exception
     (javax.baja.file.BIFile) csvOrd.resolve().get();
   java.io.InputStream is = csvFile.getInputStream();
   java.io.BufferedReader br = new java.io.BufferedReader(
-    new java.io.InputStreamReader(is));
+    new java.io.InputStreamReader(is, "UTF-8"));
 
   int[] counts = new int[5];
   int rowNum = 0;
@@ -1169,11 +1421,18 @@ private void executeCSV(long runStart) throws Exception
       line = line.trim();
       if (line.isEmpty()) continue;
 
+      // Cancellation checkpoint
+      if (isCancelled())
+      {
+        writeToLog("CSV RUN CANCELLED before row " + rowNum);
+        break;
+      }
+
       dataRow++;
       setStatus("[" + now() + "] CSV: processing row " +
         dataRow + " of " + totalRows + "...");
 
-      String[] cols = line.split(",");
+      String[] cols = parseCsvRow(line);
       if (cols.length < 5)
       {
         writeToLog("SKIPPED row " + rowNum + ": not enough columns");
@@ -1181,11 +1440,11 @@ private void executeCSV(long runStart) throws Exception
         continue;
       }
 
-      String bord1Str  = cols[0].trim();
-      String slot1Str  = cols[1].trim();
-      String direction = cols[2].trim();
-      String bord2Str  = cols[3].trim();
-      String slot2Str  = cols[4].trim();
+      String bord1Str  = cols[0];
+      String slot1Str  = cols[1];
+      String direction = cols[2];
+      String bord2Str  = cols[3];
+      String slot2Str  = cols[4];
 
       try
       {
@@ -1234,10 +1493,11 @@ private void executeCSV(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
+  String tail = isCancelled() ? " [CANCELLED]" : "";
   String summary = "CSV complete - Linked:" + counts[0] +
     " Skipped:" + counts[1] + " Errors:" + counts[2] +
     " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms";
+    " TotalTime:" + totalMs + "ms" + tail;
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
@@ -1257,12 +1517,14 @@ public void onStart() throws Exception
 public void onExecute() throws Exception
 {
   dryRunActive = false;
+  cancelRequested = false;
   runJob();
 }
 
 public void onDryRun() throws Exception
 {
   dryRunActive = true;
+  cancelRequested = false;
   try { runJob(); }
   finally { dryRunActive = false; }
 }
@@ -1278,18 +1540,6 @@ private void runJob() throws Exception
   writeToLog(VERSION + " " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered" +
     (isDryRun() ? " [DRY RUN]" : "") +
     (isDeleteMode() ? " [DELETE MODE]" : ""));
-
-  // Sample-CSV short-circuit: write the starter file and stop here so
-  // the user can edit it before running for real.
-  if (isCreateSampleCsv())
-  {
-    writeSampleCsv();
-    String msg = "Sample CSV mode - wrote sample and exited. " +
-      "Set createSampleCsv to false to run normally.";
-    setStatus("[" + now() + "] " + msg);
-    writeToLog(msg);
-    return;
-  }
 
   int mode = getModeOrdinal();
   writeToLog("Operation mode: " + mode +
@@ -1318,6 +1568,7 @@ private void runJob() throws Exception
 public void onVerify() throws Exception
 {
   dryRunActive = false;
+  cancelRequested = false;
   archiveLogFile();
   initResultsCsv();
   writeToLog(VERSION + " onVerify triggered");
@@ -1329,6 +1580,68 @@ public void onVerify() throws Exception
   catch (Exception e)
   {
     String detail = "VERIFY ERROR: " + e.getMessage();
+    setStatus("[" + now() + "] " + detail);
+    log.severe("[LinkCreator] " + detail);
+    writeToLog(detail);
+  }
+}
+
+// Set the cancel flag. The currently running BQL / CSV row loop will
+// notice between rows and exit cleanly; the in-flight row finishes
+// first to avoid leaving a half-created link.
+public void onCancel() throws Exception
+{
+  cancelRequested = true;
+  String msg = "Cancel requested - run will stop after current row";
+  setStatus("[" + now() + "] " + msg);
+  log.info("[LinkCreator] " + msg);
+  writeToLog(msg);
+}
+
+// Manual archive prune. Useful right after lowering maxArchives,
+// without having to wait for the next execute / dryRun / verify run.
+public void onPruneArchives() throws Exception
+{
+  String startMsg = "Manual prune requested (maxArchives=" +
+    resolveMaxArchives() + ")";
+  setStatus("[" + now() + "] " + startMsg);
+  log.info("[LinkCreator] " + startMsg);
+  writeToLog(startMsg);
+
+  pruneArchives(resolveLogPath());
+  pruneArchives(resolveResultsCsvPath());
+
+  String done = "Prune complete (kept up to " +
+    resolveMaxArchives() + " of each)";
+  setStatus("[" + now() + "] " + done);
+  log.info("[LinkCreator] " + done);
+  writeToLog(done);
+}
+
+// Write the starter CSV to the path defined by sampleCsvPath. Pure
+// side-effect on disk -- no link work, no archiving of the active
+// log/results.
+public void onCreateSampleCsv() throws Exception
+{
+  dryRunActive = false;
+  cancelRequested = false;
+
+  setStatus("[" + now() + "] Writing sample CSV file...");
+  log.info("[LinkCreator] onCreateSampleCsv triggered");
+  writeToLog(VERSION + " onCreateSampleCsv triggered");
+
+  try
+  {
+    writeSampleCsv();
+    String msg = "Sample CSV written. Edit it in place, then point the " +
+      "program at it (CSV mode) and execute.";
+    setStatus("[" + now() + "] " + msg);
+    writeToLog(msg);
+    log.info("[LinkCreator] " + msg);
+  }
+  catch (Exception e)
+  {
+    String detail = "SAMPLE CSV ERROR: " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
     log.severe("[LinkCreator] " + detail);
     writeToLog(detail);
