@@ -2,8 +2,49 @@
 ================================================================================
 Program: Multi-Location Component Copier (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v2.01
-Date:    2026-04-29
+Version: v2.06
+Date:    2026-06-08
+
+Changes in v2.06
+----------------
+  - Version-synced with LinkCreator at v2.06.
+  - NEW slots: linkerLogPath and linkerResultsCsvPath. The post-copy
+    link phase now writes to its OWN log file and its OWN results CSV,
+    separate from the copy phase's logFilePath / resultsCsvPath. This
+    keeps copy results and link results from interleaving in one file,
+    and each is archived + pruned independently (same maxArchives limit).
+        Slot sheet changes required:
+          ADD Property  linkerLogPath         baja:Ord
+              default "file:^logs/MultiLocationComponentCopier_linker.log"
+          ADD Property  linkerResultsCsvPath  baja:Ord
+              default "file:^logs/MultiLocationComponentCopier_linker_results.csv"
+    The copy phase's logFilePath / resultsCsvPath are unchanged. The
+    main log still gets a one-line pointer to the linker files when the
+    link phase runs.
+  - Link phase error reporting brought in line with LinkCreator v2.02
+    through v2.05:
+      * Every link row now produces a row in the linker results CSV
+        (LINKED / REMOVED / SKIPPED / DRYRUN / FOUND / MISSING / ERROR),
+        not just a log line. Previously the link phase logged but wrote
+        nothing to a CSV, so troubleshooting a failed link meant reading
+        the log by hand.
+      * Each BOrd is resolved in its own block, so a failure names which
+        ord was bad (BOrd1 vs BOrd2) instead of one generic message for
+        the whole row.
+      * A describeException() helper builds a reason that is never empty:
+        it falls back to the exception's class name and unwraps the
+        underlying cause (where Niagara usually puts the real detail).
+        Used for both BOrd-resolution failures and link-time failures.
+      * The slot is included alongside the ord in the SourceSlotPath /
+        TargetSlotPath columns, formatted "<ord> [<slot>]", via an
+        ordWithSlot() helper, so a bad row can be matched back to the
+        source CSV by ord AND slot.
+      * The linker results CSV ends with a Total summary row matching the
+        per-mode counts (Found/Missing in verify, Removed/Skipped in
+        reverse, or Linked/Skipped in create) so summary and detail agree.
+    Note: there was no double-count to fix here (unlike LinkCreator
+    v2.03). The link phase has a single processing pass with no separate
+    validation pass, so each failing row appears exactly once.
 
 Changes in v2.01
 ----------------
@@ -114,8 +155,9 @@ Purpose
 -------
 Copy one source component into one or many destination containers, with an
 optional second pass that creates links to the freshly copied components
-from a separate links CSV. Logs every action to the Application Director,
-a station-rooted log file, and a results CSV.
+from a separate links CSV. The copy phase logs to logFilePath / resultsCsvPath;
+the link phase logs to its own linkerLogPath / linkerResultsCsvPath. Every
+action is also echoed to the Application Director.
 
 Modes
 -----
@@ -151,12 +193,14 @@ Key features
     destination instead of copying
   - Optional post-copy link phase - if linksCsvPath is set, the program
     reads a 5-column links CSV (same format as LinkCreator) and creates
-    the listed links after the copy phase finishes
+    the listed links after the copy phase finishes. The link phase writes
+    its own log + results CSV (linkerLogPath / linkerResultsCsvPath) and
+    lists every link row with a Status and a Message reason.
   - createSampleCsv (action) writes two starter CSVs (copy + links) so
     the user can edit them in place rather than guessing the format
-  - Auto-archives the active log AND the results CSV to timestamped
-    copies on every run. Archive timestamp reflects the run trigger
-    time. Old archives beyond maxArchives are auto-pruned.
+  - Auto-archives the active logs AND results CSVs (both copy and linker)
+    to timestamped copies on every run. Archive timestamp reflects the
+    run trigger time. Old archives beyond maxArchives are auto-pruned.
   - Cancel action stops long-running BQL / CSV passes cleanly.
   - quickGuide String slot displays the on-station user help next to
     the configuration slots.
@@ -164,8 +208,11 @@ Key features
 Outputs
 -------
   status (string)        live timestamped progress and final summary
-  logFilePath            human-readable log of every operation
+  logFilePath            copy-phase log of every operation
   resultsCsvPath         per-copy CSV: timestamp, names, status, etc.
+  linkerLogPath          link-phase log of every operation
+  linkerResultsCsvPath   per-link CSV: timestamp, names, slot, status,
+                         message, link mode, link name, duration
   Application Director   info / warning / severe lines for ops staff
 
 Quick start
@@ -177,19 +224,19 @@ Quick start
   5) Right-click  >  Actions  >  dryRun   to preview
   6) Right-click  >  Actions  >  verify   to audit existing state
   7) Right-click  >  Actions  >  execute  to commit
-  8) Inspect the log file and results CSV for full details
+  8) Inspect the log files and results CSVs for full details
 ================================================================================
 */
 
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("MultiLocationComponentCopier");
 
-private static final String VERSION = "v2.01";
+private static final String VERSION = "v2.06";
 
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "Multi-Location Component Copier " + "v2.01\n" +
+  "Multi-Location Component Copier " + "v2.06\n" +
   "=====================================\n" +
   "\n" +
   "Modes (destinationMode):\n" +
@@ -218,6 +265,12 @@ private static final String QUICK_GUIDE =
   "Links CSV format (5 cols, same as LinkCreator):\n" +
   "  BOrd1, Slot1, Direction, BOrd2, Slot2\n" +
   "\n" +
+  "Outputs:\n" +
+  "  Copy phase  -> logFilePath / resultsCsvPath\n" +
+  "  Link phase  -> linkerLogPath / linkerResultsCsvPath\n" +
+  "  Link problem rows are listed in the linker results CSV with a\n" +
+  "  reason in the Message column and the slot shown next to the ord.\n" +
+  "\n" +
   "Steps:\n" +
   "  1) Set componentToCopy and copyTo\n" +
   "  2) Choose destinationMode (Direct/BQL/CSV)\n" +
@@ -226,7 +279,7 @@ private static final String QUICK_GUIDE =
   "  4) dryRun first to preview\n" +
   "  5) verify  to audit what is already in place\n" +
   "  6) execute to commit\n" +
-  "  7) check logFilePath and resultsCsvPath for details\n" +
+  "  7) check the log files and results CSVs for details\n" +
   "\n" +
   "Tips:\n" +
   "  - keepAllLinks=true preserves incoming links on copy\n" +
@@ -251,6 +304,58 @@ private String now()
 }
 
 // ----------------------------------------------------
+// Exception describer (v2.06)
+// Build a human-readable reason from an exception that is NEVER empty
+// or "null". Niagara resolve failures sometimes carry a null detail
+// message, which used to leave the linker CSV Message column blank. We
+// fall back to the exception's simple class name, and append the
+// underlying cause when there is one (the cause is usually where the
+// real reason lives -- e.g. a wrapper exception around "slot not found").
+// ----------------------------------------------------
+private String describeException(Throwable t)
+{
+  if (t == null) return "unknown error";
+
+  StringBuilder sb = new StringBuilder();
+  String cls = t.getClass().getSimpleName();
+  String msg = t.getMessage();
+
+  if (msg != null && msg.trim().length() > 0)
+    sb.append(cls).append(": ").append(msg.trim());
+  else
+    sb.append(cls).append(" (no detail message)");
+
+  Throwable cause = t.getCause();
+  if (cause != null && cause != t)
+  {
+    sb.append(" [cause: ").append(cause.getClass().getSimpleName());
+    String cmsg = cause.getMessage();
+    if (cmsg != null && cmsg.trim().length() > 0)
+      sb.append(": ").append(cmsg.trim());
+    sb.append("]");
+  }
+
+  return sb.toString();
+}
+
+// Format an ord + slot for the linker results CSV as "<ord> [<slot>]"
+// so the problem rows show which slot was involved, not just the
+// component ord. Falls back to just the ord when the slot is blank. (v2.06)
+private String ordWithSlot(String ord, String slot)
+{
+  String o = (ord == null) ? "" : ord;
+  if (slot == null || slot.trim().length() == 0) return o;
+  return o + " [" + slot.trim() + "]";
+}
+
+// Format an elapsed nanoTime delta as milliseconds with 3 decimals. (v2.06)
+private String durMs(long t0)
+{
+  return String.format(java.util.Locale.ROOT, "%.3f",
+    (System.nanoTime() - t0) / 1000000.0);
+}
+
+// ----------------------------------------------------
 // Cancellation flag
 // ----------------------------------------------------
 // Set by onCancel(); checked between rows in the BQL and CSV loops.
@@ -272,6 +377,18 @@ private String resolveLogPath()
   }
   catch (Exception ignore) {}
   return "file:^logs/MultiLocationComponentCopier.log";
+}
+
+// Linker-phase log path (v2.06). Separate from the copy-phase log.
+private String resolveLinkerLogPath()
+{
+  try
+  {
+    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("linkerLogPath");
+    if (ord != null && !ord.isNull()) return ord.toString().trim();
+  }
+  catch (Exception ignore) {}
+  return "file:^logs/MultiLocationComponentCopier_linker.log";
 }
 
 // Build a timestamped archive path from the given active file path.
@@ -307,6 +424,20 @@ private String resolveResultsCsvPath()
   }
   catch (Exception ignore) {}
   return "file:^logs/MultiLocationComponentCopier_results.csv";
+}
+
+// Linker-phase results CSV path (v2.06). Separate from the copy-phase
+// results CSV so copy rows and link rows never interleave.
+private String resolveLinkerResultsCsvPath()
+{
+  try
+  {
+    javax.baja.naming.BOrd ord =
+      (javax.baja.naming.BOrd) get("linkerResultsCsvPath");
+    if (ord != null && !ord.isNull()) return ord.toString().trim();
+  }
+  catch (Exception ignore) {}
+  return "file:^logs/MultiLocationComponentCopier_linker_results.csv";
 }
 
 // Set by onDryRun() to make isDryRun() report true for the duration of
@@ -512,6 +643,17 @@ private void writeToResults(String line)
   appendLine(resolveResultsCsvPath(), line);
 }
 
+// Linker-phase writers (v2.06).
+private void writeToLinkerLog(String message)
+{
+  appendLine(resolveLinkerLogPath(), "[" + now() + "] " + message);
+}
+
+private void writeToLinkerResults(String line)
+{
+  appendLine(resolveLinkerResultsCsvPath(), line);
+}
+
 // Truncate (or create empty) the file, making the parent folder if needed.
 private void clearFile(String filePath)
 {
@@ -672,6 +814,19 @@ private void archiveResultsCsv()
   pruneArchives(resolveResultsCsvPath());
 }
 
+// Linker-phase archive helpers (v2.06).
+private void archiveLinkerLogFile()
+{
+  archiveFile(resolveLinkerLogPath(), "LINKER-LOG");
+  pruneArchives(resolveLinkerLogPath());
+}
+
+private void archiveLinkerResultsCsv()
+{
+  archiveFile(resolveLinkerResultsCsvPath(), "LINKER-RESULTS-CSV");
+  pruneArchives(resolveLinkerResultsCsvPath());
+}
+
 // ----------------------------------------------------
 // Results CSV
 // ----------------------------------------------------
@@ -686,6 +841,19 @@ private void initResultsCsv()
     "Timestamp,SourceName,SourceSlotPath," +
     "DestinationName,DestinationSlotPath," +
     "Status,Message,Mode,KeepAllLinks,DurationMs");
+}
+
+// Linker results CSV init (v2.06). Archives the previous run's linker
+// CSV, then writes a fresh header. Column layout mirrors LinkCreator's
+// results CSV so the two programs read alike.
+private void initLinkerResultsCsv()
+{
+  archiveLinkerResultsCsv();
+  clearFile(resolveLinkerResultsCsvPath());
+  writeToLinkerResults(
+    "Timestamp,SourceName,SourceSlotPath," +
+    "TargetName,TargetSlotPath," +
+    "Status,Message,LinkMode,LinkName,DurationMs");
 }
 
 // Compact summary row: "Total,<summary text>" -- two fields, no
@@ -715,6 +883,30 @@ private void writeResultsSummary(
     (isCancelled() ? " [CANCELLED]" : ""));
 }
 
+// Linker results summary row (v2.06). Per-mode counts that match the
+// detail rows written during the link phase.
+private void writeLinkerSummary(
+  int linked, int removed, int skipped, int errors, int dryrun,
+  int found, int missing)
+{
+  appendLine(resolveLinkerResultsCsvPath(), "");
+  String tail = isCancelled() ? " [CANCELLED]" : "";
+  if (isVerify())
+    writeToLinkerResults("Total,Found:" + found +
+      " Missing:" + missing +
+      " Errors:" + errors + tail);
+  else if (isDeleteMode())
+    writeToLinkerResults("Total,Removed:" + removed +
+      " Skipped:" + skipped +
+      " Errors:" + errors +
+      " DryRun:" + dryrun + tail);
+  else
+    writeToLinkerResults("Total,Linked:" + linked +
+      " Skipped:" + skipped +
+      " Errors:" + errors +
+      " DryRun:" + dryrun + tail);
+}
+
 private String csvEscape(String s)
 {
   if (s == null) s = "";
@@ -722,6 +914,28 @@ private String csvEscape(String s)
       s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0)
     return '"' + s.replace("\"", "\"\"") + '"';
   return s;
+}
+
+// Write a single row to the linker results CSV (v2.06). The slot is
+// folded into the SourceSlotPath / TargetSlotPath columns via
+// ordWithSlot() so every row shows ord AND slot.
+private void writeLinkerRow(
+  String srcName, String srcOrdOrPath, String srcSlot,
+  String tgtName, String tgtOrdOrPath, String tgtSlot,
+  String status, String message, String linkMode,
+  String linkName, String durStr)
+{
+  writeToLinkerResults(
+    csvEscape(now()) + "," +
+    csvEscape(srcName) + "," +
+    csvEscape(ordWithSlot(srcOrdOrPath, srcSlot)) + "," +
+    csvEscape(tgtName) + "," +
+    csvEscape(ordWithSlot(tgtOrdOrPath, tgtSlot)) + "," +
+    csvEscape(status) + "," +
+    csvEscape(message) + "," +
+    csvEscape(linkMode) + "," +
+    csvEscape(linkName) + "," +
+    durStr);
 }
 
 // ----------------------------------------------------
@@ -1371,76 +1585,121 @@ private String buildLinkName(
 // Single link result: LINKED / SKIPPED / ERROR / DRYRUN / FOUND / MISSING / REMOVED
 // (FOUND / MISSING are verify-mode outcomes and never mutate the station.)
 // (REMOVED is a reverse-mode outcome -- the link was deleted from the target.)
+// v2.06: each outcome now writes a row to the linker results CSV with a
+// reason in the Message column, the slot folded into the slot-path
+// columns, and a duration. Link-time failures use describeException().
 private String processLinkRow(
   javax.baja.sys.BComponent srcComp, String srcSlotStr,
   javax.baja.sys.BComponent tgtComp, String tgtSlotStr)
 {
+  long t0 = System.nanoTime();
+  String linkMode = isVerify()    ? "Verify"
+                  : isDeleteMode() ? "Reverse"
+                                   : "Create";
+
+  String srcName = "";
+  String srcPath = "";
+  String tgtName = "";
+  String tgtPath = "";
+  String linkName = "";
+
   try
   {
-    String linkName = buildLinkName(srcComp, srcSlotStr, tgtSlotStr);
+    srcName  = srcComp.getName().toString();
+    srcPath  = srcComp.getSlotPath().toString();
+    tgtName  = tgtComp.getName().toString();
+    tgtPath  = tgtComp.getSlotPath().toString();
+    linkName = buildLinkName(srcComp, srcSlotStr, tgtSlotStr);
 
-    // Verify mode: just audit whether the link is already there.
+    // ---- VERIFY: audit only ----
     if (isVerify())
     {
-      if (tgtComp.getSlot(linkName) != null)
+      boolean exists = (tgtComp.getSlot(linkName) != null);
+      String durStr = durMs(t0);
+      if (exists)
       {
-        writeToLog("LINK VERIFY OK: " + srcComp.getName() + "[" + srcSlotStr +
-          "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "] EXISTS");
+        writeToLinkerLog("LINK VERIFY OK: " + srcName + "[" + srcSlotStr +
+          "] -> " + tgtName + "[" + tgtSlotStr + "] EXISTS");
+        writeLinkerRow(srcName, srcPath, srcSlotStr,
+          tgtName, tgtPath, tgtSlotStr,
+          "FOUND", "Link exists", linkMode, linkName, durStr);
         return "FOUND";
       }
-      writeToLog("LINK VERIFY MISSING: " + srcComp.getName() + "[" +
-        srcSlotStr + "] -> " + tgtComp.getName() + "[" + tgtSlotStr +
-        "] NOT FOUND");
+      writeToLinkerLog("LINK VERIFY MISSING: " + srcName + "[" + srcSlotStr +
+        "] -> " + tgtName + "[" + tgtSlotStr + "] NOT FOUND");
+      writeLinkerRow(srcName, srcPath, srcSlotStr,
+        tgtName, tgtPath, tgtSlotStr,
+        "MISSING", "Link not found", linkMode, linkName, durStr);
       return "MISSING";
     }
 
-    // Reverse mode (deleteComponent=true): remove the listed link instead
-    // of creating it. We look up the link by its deterministic linkName on
-    // the target component (same naming convention as create-mode and
-    // LinkCreator's deleteLinks). Mirrors the delete-mode branch in
-    // LinkCreator.processLink().
+    // ---- REVERSE (deleteComponent=true): remove the listed link ----
     if (isDeleteMode())
     {
       if (tgtComp.getSlot(linkName) == null)
       {
         boolean dry = isDryRun();
-        writeToLog((dry ? "LINK DRYRUN (reverse): would skip - link not found --> "
-                        : "LINK SKIPPED (reverse): link not found --> ") +
-          srcComp.getName() + "[" + srcSlotStr + "] -> " +
-          tgtComp.getName() + "[" + tgtSlotStr + "]");
+        String durStr = durMs(t0);
+        writeToLinkerLog((dry ? "LINK DRYRUN (reverse): would skip - link not found --> "
+                              : "LINK SKIPPED (reverse): link not found --> ") +
+          srcName + "[" + srcSlotStr + "] -> " +
+          tgtName + "[" + tgtSlotStr + "]");
+        writeLinkerRow(srcName, srcPath, srcSlotStr,
+          tgtName, tgtPath, tgtSlotStr,
+          dry ? "DRYRUN" : "SKIPPED",
+          dry ? "Would skip - link not found" : "Link not found",
+          linkMode, linkName, durStr);
         return dry ? "DRYRUN" : "SKIPPED";
       }
 
       if (isDryRun())
       {
-        writeToLog("LINK DRYRUN (reverse): would remove --> " +
-          srcComp.getName() + "[" + srcSlotStr + "] -> " +
-          tgtComp.getName() + "[" + tgtSlotStr + "]");
+        String durStr = durMs(t0);
+        writeToLinkerLog("LINK DRYRUN (reverse): would remove --> " +
+          srcName + "[" + srcSlotStr + "] -> " +
+          tgtName + "[" + tgtSlotStr + "]");
+        writeLinkerRow(srcName, srcPath, srcSlotStr,
+          tgtName, tgtPath, tgtSlotStr,
+          "DRYRUN", "Would remove link", linkMode, linkName, durStr);
         return "DRYRUN";
       }
 
       tgtComp.remove(linkName);
-      writeToLog("LINK REMOVED: " + srcComp.getName() + "[" + srcSlotStr +
-        "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "]");
+      String durStr = durMs(t0);
+      writeToLinkerLog("LINK REMOVED: " + srcName + "[" + srcSlotStr +
+        "] -> " + tgtName + "[" + tgtSlotStr + "]");
+      writeLinkerRow(srcName, srcPath, srcSlotStr,
+        tgtName, tgtPath, tgtSlotStr,
+        "REMOVED", "", linkMode, linkName, durStr);
       return "REMOVED";
     }
 
-    // Create mode (default).
+    // ---- CREATE (default) ----
     if (tgtComp.getSlot(linkName) != null)
     {
       boolean dry = isDryRun();
-      writeToLog((dry ? "LINK DRYRUN: would skip - already exists --> "
-                      : "LINK SKIPPED: already exists --> ") +
-        srcComp.getName() + "[" + srcSlotStr + "] -> " +
-        tgtComp.getName() + "[" + tgtSlotStr + "]");
+      String durStr = durMs(t0);
+      writeToLinkerLog((dry ? "LINK DRYRUN: would skip - already exists --> "
+                            : "LINK SKIPPED: already exists --> ") +
+        srcName + "[" + srcSlotStr + "] -> " +
+        tgtName + "[" + tgtSlotStr + "]");
+      writeLinkerRow(srcName, srcPath, srcSlotStr,
+        tgtName, tgtPath, tgtSlotStr,
+        dry ? "DRYRUN" : "SKIPPED",
+        dry ? "Would skip - link already exists" : "Link already exists",
+        linkMode, linkName, durStr);
       return dry ? "DRYRUN" : "SKIPPED";
     }
 
     if (isDryRun())
     {
-      writeToLog("LINK DRYRUN: would link --> " +
-        srcComp.getName() + "[" + srcSlotStr + "] -> " +
-        tgtComp.getName() + "[" + tgtSlotStr + "]");
+      String durStr = durMs(t0);
+      writeToLinkerLog("LINK DRYRUN: would link --> " +
+        srcName + "[" + srcSlotStr + "] -> " +
+        tgtName + "[" + tgtSlotStr + "]");
+      writeLinkerRow(srcName, srcPath, srcSlotStr,
+        tgtName, tgtPath, tgtSlotStr,
+        "DRYRUN", "Would create link", linkMode, linkName, durStr);
       return "DRYRUN";
     }
 
@@ -1451,13 +1710,22 @@ private String processLinkRow(
       new javax.baja.sys.BLink(srcHandleOrd, srcSlotStr, tgtSlotStr, true);
     tgtComp.add(linkName, newLink, null);
 
-    writeToLog("LINKED: " + srcComp.getName() + "[" + srcSlotStr +
-      "] -> " + tgtComp.getName() + "[" + tgtSlotStr + "]");
+    String durStr = durMs(t0);
+    writeToLinkerLog("LINKED: " + srcName + "[" + srcSlotStr +
+      "] -> " + tgtName + "[" + tgtSlotStr + "]");
+    writeLinkerRow(srcName, srcPath, srcSlotStr,
+      tgtName, tgtPath, tgtSlotStr,
+      "LINKED", "", linkMode, linkName, durStr);
     return "LINKED";
   }
   catch (Exception e)
   {
-    writeToLog("LINK ERROR: " + e.getMessage());
+    String reason = describeException(e);
+    String durStr = durMs(t0);
+    writeToLinkerLog("LINK ERROR: " + reason);
+    writeLinkerRow(srcName, srcPath, srcSlotStr,
+      tgtName, tgtPath, tgtSlotStr,
+      "ERROR", reason, linkMode, linkName, durStr);
     return "ERROR";
   }
 }
@@ -1467,8 +1735,23 @@ private void executeLinksCsv(String linksCsvPath)
   String phaseLabel = isVerify()    ? "Verifying"
                     : isDeleteMode() ? "Reversing"
                                      : "Processing";
+  String linkModeLabel = isVerify()    ? "Verify"
+                       : isDeleteMode() ? "Reverse"
+                                        : "Create";
 
-  writeToLog("--- " + phaseLabel + " links CSV: " + linksCsvPath +
+  // v2.06: the link phase writes to its OWN log + results CSV. Archive
+  // the previous run's linker files and start a fresh linker results CSV
+  // with a header before any rows are written.
+  archiveLinkerLogFile();
+  initLinkerResultsCsv();
+
+  // Leave a pointer in the main (copy-phase) log so an operator looking
+  // there knows where the link detail went.
+  writeToLog("Link phase running - details in linker log (" +
+    resolveLinkerLogPath() + ") and linker results CSV (" +
+    resolveLinkerResultsCsvPath() + ")");
+
+  writeToLinkerLog("--- " + phaseLabel + " links CSV: " + linksCsvPath +
     (isVerify()    ? " [VERIFY]"  : "") +
     (isDeleteMode() && !isVerify() ? " [REVERSE]" : "") + " ---");
   setStatus("[" + now() + "] " + phaseLabel + " links CSV...");
@@ -1478,6 +1761,8 @@ private void executeLinksCsv(String linksCsvPath)
   java.io.File linksFile = resolveToFile(linksCsvPath);
   if (linksFile == null || !linksFile.exists())
   {
+    writeToLinkerLog("LINKS CSV NOT FOUND: " + linksCsvPath +
+      " - skipping link phase");
     writeToLog("LINKS CSV NOT FOUND: " + linksCsvPath +
       " - skipping link phase");
     return;
@@ -1487,7 +1772,7 @@ private void executeLinksCsv(String linksCsvPath)
   // while the loop runs. Costs one extra pass over the file but
   // matches the UX of the copy-mode CSV phase.
   int totalRows = countLinksCsvRows(linksFile);
-  writeToLog("Links CSV total data rows: " + totalRows);
+  writeToLinkerLog("Links CSV total data rows: " + totalRows);
 
   int linked = 0, skipped = 0, errors = 0, dryrun = 0;
   int found = 0, missing = 0;
@@ -1514,7 +1799,7 @@ private void executeLinksCsv(String linksCsvPath)
       // Cancellation checkpoint
       if (isCancelled())
       {
-        writeToLog("LINK PHASE CANCELLED at row " + rowNum);
+        writeToLinkerLog("LINK PHASE CANCELLED at row " + rowNum);
         break;
       }
 
@@ -1532,7 +1817,11 @@ private void executeLinksCsv(String linksCsvPath)
       String[] cols = parseCsvRow(line);
       if (cols.length < 5)
       {
-        writeToLog("LINK row " + rowNum + " SKIPPED: not enough columns");
+        writeToLinkerLog("LINK row " + rowNum + " SKIPPED: not enough columns");
+        writeLinkerRow("(row " + rowNum + ")", "", "", "", "", "",
+          "SKIPPED",
+          "Not enough columns (need 5, got " + cols.length + ")",
+          linkModeLabel, "", "0.000");
         skipped++;
         continue;
       }
@@ -1543,44 +1832,104 @@ private void executeLinksCsv(String linksCsvPath)
       String bord2Str  = cols[3];
       String slot2Str  = cols[4];
 
+      // v2.06: resolve each BOrd in its own block so the ERROR row can
+      // name exactly which ord failed, give a real reason, and show the
+      // slot next to the ord.
+      javax.baja.sys.BComponent comp1 = null;
+      javax.baja.sys.BComponent comp2 = null;
+
+      // --- Resolve BOrd1 ---
       try
       {
-        javax.baja.sys.BComponent comp1 = (javax.baja.sys.BComponent)
+        Object o1 =
           javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
-        javax.baja.sys.BComponent comp2 = (javax.baja.sys.BComponent)
-          javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
-
-        String result;
-        if (direction.equals(">"))
-          result = processLinkRow(comp1, slot1Str, comp2, slot2Str);
-        else if (direction.equals("<"))
-          result = processLinkRow(comp2, slot2Str, comp1, slot1Str);
-        else
+        if (!(o1 instanceof javax.baja.sys.BComponent))
         {
-          writeToLog("LINK row " + rowNum +
-            " SKIPPED: unknown direction '" + direction + "'");
-          skipped++;
+          String reason = "BOrd1 resolved to a non-component (" +
+            (o1 == null ? "null" : o1.getClass().getSimpleName()) +
+            "): " + bord1Str;
+          writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
+          writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
+            "", bord2Str, slot2Str, "ERROR", reason,
+            linkModeLabel, "", "0.000");
+          errors++;
           continue;
         }
-
-        if (result.equals("LINKED"))       linked++;
-        else if (result.equals("REMOVED"))  removed++;
-        else if (result.equals("SKIPPED")) skipped++;
-        else if (result.equals("DRYRUN"))  dryrun++;
-        else if (result.equals("FOUND"))   found++;
-        else if (result.equals("MISSING")) missing++;
-        else                               errors++;
+        comp1 = (javax.baja.sys.BComponent) o1;
       }
       catch (Exception e)
       {
+        String reason = "BOrd1 cannot resolve: " + bord1Str +
+          " -- " + describeException(e);
+        writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
+        writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
+          "", bord2Str, slot2Str, "ERROR", reason,
+          linkModeLabel, "", "0.000");
         errors++;
-        writeToLog("LINK row " + rowNum + " ERROR: " + e.getMessage());
+        continue;
       }
+
+      // --- Resolve BOrd2 ---
+      try
+      {
+        Object o2 =
+          javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
+        if (!(o2 instanceof javax.baja.sys.BComponent))
+        {
+          String reason = "BOrd2 resolved to a non-component (" +
+            (o2 == null ? "null" : o2.getClass().getSimpleName()) +
+            "): " + bord2Str;
+          writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
+          writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
+            "", bord2Str, slot2Str, "ERROR", reason,
+            linkModeLabel, "", "0.000");
+          errors++;
+          continue;
+        }
+        comp2 = (javax.baja.sys.BComponent) o2;
+      }
+      catch (Exception e)
+      {
+        String reason = "BOrd2 cannot resolve: " + bord2Str +
+          " -- " + describeException(e);
+        writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
+        writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
+          "", bord2Str, slot2Str, "ERROR", reason,
+          linkModeLabel, "", "0.000");
+        errors++;
+        continue;
+      }
+
+      // --- Both resolved: dispatch by direction ---
+      String result;
+      if (direction.equals(">"))
+        result = processLinkRow(comp1, slot1Str, comp2, slot2Str);
+      else if (direction.equals("<"))
+        result = processLinkRow(comp2, slot2Str, comp1, slot1Str);
+      else
+      {
+        writeToLinkerLog("LINK row " + rowNum +
+          " SKIPPED: unknown direction '" + direction + "'");
+        writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
+          "", bord2Str, slot2Str, "SKIPPED",
+          "Invalid direction '" + direction + "' (expected > or <)",
+          linkModeLabel, "", "0.000");
+        skipped++;
+        continue;
+      }
+
+      if (result.equals("LINKED"))       linked++;
+      else if (result.equals("REMOVED"))  removed++;
+      else if (result.equals("SKIPPED")) skipped++;
+      else if (result.equals("DRYRUN"))  dryrun++;
+      else if (result.equals("FOUND"))   found++;
+      else if (result.equals("MISSING")) missing++;
+      else                               errors++;
     }
   }
   catch (Exception e)
   {
-    writeToLog("LINKS CSV READ ERROR: " + e.getMessage());
+    writeToLinkerLog("LINKS CSV READ ERROR: " + describeException(e));
   }
   finally
   {
@@ -1611,9 +1960,11 @@ private void executeLinksCsv(String linksCsvPath)
       " Skipped:" + skipped + " Errors:" + errors +
       " DryRun:" + dryrun + tail;
   }
-  writeToLog(linkSummary);
+  writeToLinkerLog(linkSummary);
+  writeLinkerSummary(linked, removed, skipped, errors, dryrun, found, missing);
   setStatus("[" + now() + "] " + linkSummary);
   log.info("[MultiLocationComponentCopier] " + linkSummary);
+  writeToLog(linkSummary);
 }
 
 // ----------------------------------------------------
@@ -1974,6 +2325,7 @@ public void onCancel() throws Exception
 
 // Manual archive prune. Useful right after lowering maxArchives,
 // without having to wait for the next execute / dryRun / verify run.
+// v2.06: also prunes the linker log + linker results CSV archives.
 public void onPruneArchives() throws Exception
 {
   String startMsg = "Manual prune requested (maxArchives=" +
@@ -1984,6 +2336,8 @@ public void onPruneArchives() throws Exception
 
   pruneArchives(resolveLogPath());
   pruneArchives(resolveResultsCsvPath());
+  pruneArchives(resolveLinkerLogPath());
+  pruneArchives(resolveLinkerResultsCsvPath());
 
   String done = "Prune complete (kept up to " +
     resolveMaxArchives() + " of each)";
