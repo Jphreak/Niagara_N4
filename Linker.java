@@ -2,8 +2,108 @@
 ================================================================================
 Program: LinkCreator (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v2.01
-Date:    2026-04-29
+Version: v2.06
+Date:    2026-06-08
+
+Changes in v2.06
+----------------
+  - Version-synced with the Multi-Location Component Copier at v2.06.
+    No behavioural change in LinkCreator; this bump keeps the two
+    programs' version numbers aligned. The matching Copier release
+    gives its post-copy link phase the same per-row CSV error
+    reporting LinkCreator gained across v2.02-v2.05 (descriptive
+    reasons, per-BOrd resolution, and the slot shown next to the ord),
+    writing to its own linkerLogPath / linkerResultsCsvPath slots.
+
+Changes in v2.05
+----------------
+  - CSV problem rows now include the slot, not just the ord. The
+    SourceSlotPath / TargetSlotPath columns for CSV ERROR and SKIPPED
+    rows previously carried only BOrd1 / BOrd2. They now carry the
+    slot too, formatted "<ord> [<slot>]" (e.g.
+    "station:|slot:/Drivers/Foo [Out]"), via a new ordWithSlot()
+    helper. Falls back to just the ord when the slot column is blank.
+    Applies to every CSV problem row where the slots are known: both
+    BOrd resolution failures, the bad-direction skip, and the link-
+    processing error. The malformed "not enough columns" row still has
+    no slots to show, so it is unchanged.
+
+Changes in v2.04
+----------------
+  - FIX uninformative CSV error messages. v2.03 resolved BOrd1 and
+    BOrd2 inside one try block and wrote the bare e.getMessage() to
+    the CSV. Niagara resolve failures often carry a null or empty
+    detail message, so the Message column came back blank (or "null")
+    and never said which ord was bad or why.
+
+    Now each BOrd is resolved in its own block, so the ERROR row
+    names exactly which ord failed:
+       "BOrd1 cannot resolve: <ord> -- <reason>"
+       "BOrd2 cannot resolve: <ord> -- <reason>"
+       "BOrd1 resolved to a non-component (<class>): <ord>"
+    A new describeException() helper builds the <reason> and never
+    returns empty: it uses the exception's simple class name plus its
+    message, falls back to "(no detail message)" when the message is
+    null, and appends the underlying cause when there is one. The same
+    helper is now used by processLink() so link-time failures (e.g. a
+    slot that does not exist on the component) also get a readable
+    reason instead of a blank.
+
+Changes in v2.03
+----------------
+  - FIX double-counted CSV errors. v2.02 wrote every problem row to the
+    results CSV TWICE: once from the validation pass (VALIDATION row)
+    and again from the processing pass (ERROR / SKIPPED row), and the
+    Errors summary was additionally seeded with the validation count.
+    A run with 56 bad rows showed 112 detail rows.
+
+    The processing pass is now the single source of truth. It already
+    attempts every row and catches the exact same failures with the
+    real exception message at link time:
+       - unresolvable BOrd1 / BOrd2  -> ERROR  (resolve exception text)
+       - invalid direction           -> SKIPPED
+       - too few columns             -> SKIPPED
+    So the validation pass no longer writes to the CSV and no longer
+    seeds the Errors count. It still runs and still logs its findings
+    to the log file as a pre-run summary. Result: one detail row per
+    failing row, and the summary count matches the rows.
+
+Changes in v2.02
+----------------
+  - CSV ERROR REPORTING. Previously, problems found during the CSV
+    validation pass (unresolvable BOrds, invalid direction, too few
+    columns) were written ONLY to the log file. The results CSV just
+    showed a count in the summary line, with no per-row detail, so
+    troubleshooting meant cross-referencing the log.
+
+    Now the results CSV itself lists every problem row. Two sources
+    feed it:
+
+      1) Validation-pass errors. validateCsv() now returns structured
+         CsvIssue records (row number, BOrd1, BOrd2, and a human-
+         readable reason) instead of plain strings. Each issue is
+         written to the results CSV as a VALIDATION row, with the
+         reason in the Message column:
+            "BOrd1 does not exist: <ord>"
+            "BOrd2 does not exist: <ord>"
+            "Invalid direction '<x>' (expected > or <)"
+            "Not enough columns (need 5, got N)"
+
+      2) Processing-pass errors. The catch block in executeCSV() that
+         used to only log a row error now also writes an ERROR row to
+         the results CSV with the exception message as the reason, so
+         failures that only surface at link time (e.g. an existing
+         link, a slot that does not exist on the component) are
+         captured too. processLink() already wrote its own ERROR /
+         SKIPPED rows; those are unchanged.
+
+    The new Status values you'll see in the CSV:
+       VALIDATION  - row failed the pre-run validation pass
+       ERROR       - row failed during link processing
+       SKIPPED     - link already exists / link not found (delete mode)
+    The summary line still reports the rolled-up counts as before;
+    VALIDATION rows are additionally tallied into the Errors count so
+    the summary and the detail rows agree.
 
 Changes in v2.01
 ----------------
@@ -107,6 +207,9 @@ Key features
     components share the same display name.
   - dryRun previews are reported as DRYRUN with full skip-reason detail
     so summary counts always reflect what was previewed.
+  - CSV mode now lists every problem row (validation + processing) in
+    the results CSV with a reason, so troubleshooting no longer needs
+    the log file.
   - Cancel action stops long-running BQL / CSV passes cleanly.
   - All output paths (log, archive, results CSV, sample CSV) are
     user-configurable Ord slots; archive log inherits the active log's
@@ -134,12 +237,12 @@ Quick start
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("LinkCreator");
 
-private static final String VERSION = "v2.01";
+private static final String VERSION = "v2.06";
 
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "LinkCreator " + "v2.01\n" +
+  "LinkCreator " + "v2.06\n" +
   "=====================================\n" +
   "\n" +
   "Modes (operationMode):\n" +
@@ -162,6 +265,11 @@ private static final String QUICK_GUIDE =
   "  BOrd1, Slot1, Direction, BOrd2, Slot2\n" +
   "  Direction:  >  links 1 -> 2     <  links 2 -> 1\n" +
   "\n" +
+  "CSV troubleshooting:\n" +
+  "  Problem rows are listed in the results CSV with a reason\n" +
+  "  in the Message column. Status VALIDATION = caught before the\n" +
+  "  run; Status ERROR = failed during link processing.\n" +
+  "\n" +
   "Steps:\n" +
   "  1) Choose operationMode and configure ords + slots\n" +
   "  2) (optional) Create Sample CSV to get a starter file,\n" +
@@ -180,6 +288,74 @@ private String now()
 {
   return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
     .format(new java.util.Date());
+}
+
+// ----------------------------------------------------
+// Exception describer (v2.04)
+// Build a human-readable reason from an exception that is NEVER empty
+// or "null". Niagara resolve failures sometimes carry a null detail
+// message, which used to leave the CSV Message column blank. We fall
+// back to the exception's simple class name, and append the underlying
+// cause when there is one (the cause is usually where the real reason
+// lives -- e.g. UnresolvedException wrapping a "slot not found").
+// ----------------------------------------------------
+private String describeException(Throwable t)
+{
+  if (t == null) return "unknown error";
+
+  StringBuilder sb = new StringBuilder();
+  String cls = t.getClass().getSimpleName();
+  String msg = t.getMessage();
+
+  if (msg != null && msg.trim().length() > 0)
+    sb.append(cls).append(": ").append(msg.trim());
+  else
+    sb.append(cls).append(" (no detail message)");
+
+  Throwable cause = t.getCause();
+  if (cause != null && cause != t)
+  {
+    sb.append(" [cause: ").append(cause.getClass().getSimpleName());
+    String cmsg = cause.getMessage();
+    if (cmsg != null && cmsg.trim().length() > 0)
+      sb.append(": ").append(cmsg.trim());
+    sb.append("]");
+  }
+
+  return sb.toString();
+}
+
+// Format an ord + slot for the results CSV as "<ord> [<slot>]" so the
+// problem rows show which slot was involved, not just the component
+// ord. Falls back to just the ord when the slot is blank. (v2.05)
+private String ordWithSlot(String ord, String slot)
+{
+  String o = (ord == null) ? "" : ord;
+  if (slot == null || slot.trim().length() == 0) return o;
+  return o + " [" + slot.trim() + "]";
+}
+
+// ----------------------------------------------------
+// CSV issue record (v2.02)
+// Lightweight structured carrier for a validation problem so it can
+// be written to the results CSV with full detail rather than just a
+// log line. Kept as a plain inner-ish data holder -- no Baja types,
+// no compiler features unavailable in the embedded environment.
+// ----------------------------------------------------
+private static class CsvIssue
+{
+  int rowNum;
+  String bord1;
+  String bord2;
+  String reason;
+
+  CsvIssue(int rowNum, String bord1, String bord2, String reason)
+  {
+    this.rowNum = rowNum;
+    this.bord1  = bord1;
+    this.bord2  = bord2;
+    this.reason = reason;
+  }
 }
 
 // ----------------------------------------------------
@@ -627,6 +803,23 @@ private void writeResultsSummary(
     (isCancelled() ? " [CANCELLED]" : ""));
 }
 
+// Write a single VALIDATION problem row to the results CSV.
+// NOTE (v2.03): no longer called -- the processing pass is now the
+// single source of truth for CSV problem rows (see executeCSV). Kept
+// here in case you ever want pre-run VALIDATION rows back; if so, call
+// it from the validation loop in executeCSV and re-add count seeding.
+private void writeValidationRow(CsvIssue issue)
+{
+  writeToResults(csvEscape(now()) + "," +
+    csvEscape("(row " + issue.rowNum + ")") + "," +
+    csvEscape(issue.bord1 == null ? "" : issue.bord1) + "," +
+    "," +
+    csvEscape(issue.bord2 == null ? "" : issue.bord2) + "," +
+    "VALIDATION," +
+    csvEscape(issue.reason) + "," +
+    "CSV,,0.000");
+}
+
 private String csvEscape(String s)
 {
   if (s == null) s = "";
@@ -731,6 +924,81 @@ private int countCsvRows(javax.baja.naming.BOrd csvOrd)
   return count;
 }
 
+// Validate the CSV. Returns a List of CsvIssue records (v2.02). Each
+// record carries the row number, the raw BOrd strings, and a human-
+// readable reason. The caller writes these into the results CSV as
+// VALIDATION rows so the user can troubleshoot from the CSV alone.
+private java.util.List validateCsv(javax.baja.naming.BOrd csvOrd)
+{
+  java.util.List issues = new java.util.ArrayList();
+  java.io.InputStream is = null;
+  java.io.BufferedReader br = null;
+  try
+  {
+    javax.baja.file.BIFile csvFile =
+      (javax.baja.file.BIFile) csvOrd.resolve().get();
+    is = csvFile.getInputStream();
+    br = new java.io.BufferedReader(
+      new java.io.InputStreamReader(is, "UTF-8"));
+    String line;
+    int rowNum = 0;
+
+    while ((line = br.readLine()) != null)
+    {
+      rowNum++;
+      if (rowNum == 1) continue;
+      line = line.trim();
+      if (line.isEmpty()) continue;
+
+      String[] cols = parseCsvRow(line);
+      if (cols.length < 5)
+      {
+        issues.add(new CsvIssue(rowNum, "", "",
+          "Not enough columns (need 5, got " + cols.length + ")"));
+        continue;
+      }
+
+      String bord1Str  = cols[0];
+      String direction = cols[2];
+      String bord2Str  = cols[3];
+
+      if (!direction.equals(">") && !direction.equals("<"))
+        issues.add(new CsvIssue(rowNum, bord1Str, bord2Str,
+          "Invalid direction '" + direction + "' (expected > or <)"));
+
+      try
+      {
+        javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
+      }
+      catch (Exception e)
+      {
+        issues.add(new CsvIssue(rowNum, bord1Str, bord2Str,
+          "BOrd1 does not exist / cannot resolve: " + e.getMessage()));
+      }
+
+      try
+      {
+        javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
+      }
+      catch (Exception e)
+      {
+        issues.add(new CsvIssue(rowNum, bord1Str, bord2Str,
+          "BOrd2 does not exist / cannot resolve: " + e.getMessage()));
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    issues.add(new CsvIssue(0, "", "", "CSV read error: " + e.getMessage()));
+  }
+  finally
+  {
+    if (br != null) try { br.close(); } catch (Exception ignore) {}
+    if (is != null) try { is.close(); } catch (Exception ignore) {}
+  }
+  return issues;
+}
+
 // Quote-aware CSV row parser. Splits a line into fields on commas
 // but treats commas inside double-quoted fields as literal. Doubled
 // quotes ("") inside a quoted field are unescaped to a single ".
@@ -783,75 +1051,6 @@ private String[] parseCsvRow(String line)
   for (int i = 0; i < fields.size(); i++)
     out[i] = ((String) fields.get(i)).trim();
   return out;
-}
-
-private java.util.List validateCsv(javax.baja.naming.BOrd csvOrd)
-{
-  java.util.List errors = new java.util.ArrayList();
-  java.io.InputStream is = null;
-  java.io.BufferedReader br = null;
-  try
-  {
-    javax.baja.file.BIFile csvFile =
-      (javax.baja.file.BIFile) csvOrd.resolve().get();
-    is = csvFile.getInputStream();
-    br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is, "UTF-8"));
-    String line;
-    int rowNum = 0;
-
-    while ((line = br.readLine()) != null)
-    {
-      rowNum++;
-      if (rowNum == 1) continue;
-      line = line.trim();
-      if (line.isEmpty()) continue;
-
-      String[] cols = parseCsvRow(line);
-      if (cols.length < 5)
-      {
-        errors.add("Row " + rowNum + ": not enough columns");
-        continue;
-      }
-
-      String bord1Str  = cols[0];
-      String direction = cols[2];
-      String bord2Str  = cols[3];
-
-      if (!direction.equals(">") && !direction.equals("<"))
-        errors.add("Row " + rowNum + ": invalid direction '" + direction + "'");
-
-      try
-      {
-        javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
-      }
-      catch (Exception e)
-      {
-        errors.add("Row " + rowNum + ": cannot resolve BOrd1 '" +
-          bord1Str + "': " + e.getMessage());
-      }
-
-      try
-      {
-        javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
-      }
-      catch (Exception e)
-      {
-        errors.add("Row " + rowNum + ": cannot resolve BOrd2 '" +
-          bord2Str + "': " + e.getMessage());
-      }
-    }
-  }
-  catch (Exception e)
-  {
-    errors.add("CSV read error: " + e.getMessage());
-  }
-  finally
-  {
-    if (br != null) try { br.close(); } catch (Exception ignore) {}
-    if (is != null) try { is.close(); } catch (Exception ignore) {}
-  }
-  return errors;
 }
 
 // ----------------------------------------------------
@@ -1196,14 +1395,15 @@ private String processLink(
   {
     String durStr = String.format(java.util.Locale.ROOT, "%.3f",
       (System.nanoTime() - t0) / 1000000.0);
-    String detail = "ERROR in processLink: " + e.getMessage();
+    String reason = describeException(e);
+    String detail = "ERROR in processLink: " + reason;
     setStatus("[" + now() + "] " + detail);
     log.severe("[LinkCreator] " + detail);
     writeToLog(detail);
     writeToResults(csvEscape(now()) + "," +
       csvEscape(srcComp.getName()) + ",," +
       csvEscape(tgtComp.getName()) + ",," +
-      "ERROR," + csvEscape(e.getMessage()) + "," +
+      "ERROR," + csvEscape(reason) + "," +
       csvEscape(mode) + ",," + durStr);
     return "ERROR";
   }
@@ -1380,14 +1580,21 @@ private void executeCSV(long runStart) throws Exception
 
   writeToLog("Using CSV: " + csvOrd.toString());
 
-  // --- Validation pass ---
+  // --- Validation pass (v2.03: logs only; the processing pass below
+  //     is the single source of truth for CSV problem rows, so we no
+  //     longer write VALIDATION rows or seed the Errors count here --
+  //     that was causing every bad row to appear twice). ---
   setStatus("[" + now() + "] CSV: validating...");
-  java.util.List validationErrors = validateCsv(csvOrd);
-  if (validationErrors.size() > 0)
+  java.util.List validationIssues = validateCsv(csvOrd);
+  if (validationIssues.size() > 0)
   {
-    writeToLog("CSV VALIDATION WARNINGS (" + validationErrors.size() + "):");
-    for (int i = 0; i < validationErrors.size(); i++)
-      writeToLog("  " + validationErrors.get(i).toString());
+    writeToLog("CSV VALIDATION ISSUES (" + validationIssues.size() +
+      ") - see ERROR/SKIPPED rows in results CSV for details:");
+    for (int i = 0; i < validationIssues.size(); i++)
+    {
+      CsvIssue issue = (CsvIssue) validationIssues.get(i);
+      writeToLog("  Row " + issue.rowNum + ": " + issue.reason);
+    }
     writeToLog("Proceeding with valid rows...");
   }
   else
@@ -1407,6 +1614,7 @@ private void executeCSV(long runStart) throws Exception
     new java.io.InputStreamReader(is, "UTF-8"));
 
   int[] counts = new int[5];
+
   int rowNum = 0;
   int dataRow = 0;
   String line;
@@ -1436,6 +1644,14 @@ private void executeCSV(long runStart) throws Exception
       if (cols.length < 5)
       {
         writeToLog("SKIPPED row " + rowNum + ": not enough columns");
+        // v2.02: also record the skip reason in the results CSV. This
+        // is counted as SKIPPED (it was already validated above as an
+        // ERROR row, so we don't double-count it into Errors here).
+        writeToResults(csvEscape(now()) + "," +
+          csvEscape("(row " + rowNum + ")") + ",,,," +
+          "SKIPPED," +
+          csvEscape("Not enough columns (need 5, got " + cols.length + ")") +
+          ",CSV,,0.000");
         counts[1]++;
         continue;
       }
@@ -1446,13 +1662,88 @@ private void executeCSV(long runStart) throws Exception
       String bord2Str  = cols[3];
       String slot2Str  = cols[4];
 
+      // v2.04: resolve each BOrd in its own block so the ERROR row can
+      // name exactly which ord failed and give a real reason.
+      javax.baja.sys.BComponent comp1 = null;
+      javax.baja.sys.BComponent comp2 = null;
+
+      // --- Resolve BOrd1 ---
       try
       {
-        javax.baja.sys.BComponent comp1 = (javax.baja.sys.BComponent)
+        Object o1 =
           javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
-        javax.baja.sys.BComponent comp2 = (javax.baja.sys.BComponent)
-          javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
+        if (!(o1 instanceof javax.baja.sys.BComponent))
+        {
+          counts[2]++;
+          String reason = "BOrd1 resolved to a non-component (" +
+            (o1 == null ? "null" : o1.getClass().getSimpleName()) +
+            "): " + bord1Str;
+          writeToLog("ERROR on row " + rowNum + ": " + reason);
+          log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
+          writeToResults(csvEscape(now()) + "," +
+            csvEscape("(row " + rowNum + ")") + "," +
+            csvEscape(ordWithSlot(bord1Str, slot1Str)) + ",," +
+            csvEscape(ordWithSlot(bord2Str, slot2Str)) + "," +
+            "ERROR," + csvEscape(reason) + ",CSV,,0.000");
+          continue;
+        }
+        comp1 = (javax.baja.sys.BComponent) o1;
+      }
+      catch (Exception e)
+      {
+        counts[2]++;
+        String reason = "BOrd1 cannot resolve: " + bord1Str +
+          " -- " + describeException(e);
+        writeToLog("ERROR on row " + rowNum + ": " + reason);
+        log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
+        writeToResults(csvEscape(now()) + "," +
+          csvEscape("(row " + rowNum + ")") + "," +
+          csvEscape(ordWithSlot(bord1Str, slot1Str)) + ",," +
+          csvEscape(ordWithSlot(bord2Str, slot2Str)) + "," +
+          "ERROR," + csvEscape(reason) + ",CSV,,0.000");
+        continue;
+      }
 
+      // --- Resolve BOrd2 ---
+      try
+      {
+        Object o2 =
+          javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
+        if (!(o2 instanceof javax.baja.sys.BComponent))
+        {
+          counts[2]++;
+          String reason = "BOrd2 resolved to a non-component (" +
+            (o2 == null ? "null" : o2.getClass().getSimpleName()) +
+            "): " + bord2Str;
+          writeToLog("ERROR on row " + rowNum + ": " + reason);
+          log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
+          writeToResults(csvEscape(now()) + "," +
+            csvEscape("(row " + rowNum + ")") + "," +
+            csvEscape(ordWithSlot(bord1Str, slot1Str)) + ",," +
+            csvEscape(ordWithSlot(bord2Str, slot2Str)) + "," +
+            "ERROR," + csvEscape(reason) + ",CSV,,0.000");
+          continue;
+        }
+        comp2 = (javax.baja.sys.BComponent) o2;
+      }
+      catch (Exception e)
+      {
+        counts[2]++;
+        String reason = "BOrd2 cannot resolve: " + bord2Str +
+          " -- " + describeException(e);
+        writeToLog("ERROR on row " + rowNum + ": " + reason);
+        log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
+        writeToResults(csvEscape(now()) + "," +
+          csvEscape("(row " + rowNum + ")") + "," +
+          csvEscape(ordWithSlot(bord1Str, slot1Str)) + ",," +
+          csvEscape(ordWithSlot(bord2Str, slot2Str)) + "," +
+          "ERROR," + csvEscape(reason) + ",CSV,,0.000");
+        continue;
+      }
+
+      // --- Both components resolved: process the link ---
+      try
+      {
         String result;
         if (direction.equals(">"))
         {
@@ -1472,6 +1763,15 @@ private void executeCSV(long runStart) throws Exception
         {
           writeToLog("SKIPPED row " + rowNum +
             ": unknown direction '" + direction + "'");
+          // record the bad-direction skip in the results CSV.
+          writeToResults(csvEscape(now()) + "," +
+            csvEscape("(row " + rowNum + ")") + "," +
+            csvEscape(ordWithSlot(bord1Str, slot1Str)) + ",," +
+            csvEscape(ordWithSlot(bord2Str, slot2Str)) + "," +
+            "SKIPPED," +
+            csvEscape("Invalid direction '" + direction +
+              "' (expected > or <)") +
+            ",CSV,,0.000");
           counts[1]++;
           continue;
         }
@@ -1480,9 +1780,14 @@ private void executeCSV(long runStart) throws Exception
       catch (Exception e)
       {
         counts[2]++;
-        writeToLog("ERROR on row " + rowNum + ": " + e.getMessage());
-        log.warning("[LinkCreator] CSV row " + rowNum +
-          " error: " + e.getMessage());
+        String reason = describeException(e);
+        writeToLog("ERROR on row " + rowNum + ": " + reason);
+        log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
+        writeToResults(csvEscape(now()) + "," +
+          csvEscape("(row " + rowNum + ")") + "," +
+          csvEscape(ordWithSlot(bord1Str, slot1Str)) + ",," +
+          csvEscape(ordWithSlot(bord2Str, slot2Str)) + "," +
+          "ERROR," + csvEscape(reason) + ",CSV,,0.000");
       }
     }
   }
