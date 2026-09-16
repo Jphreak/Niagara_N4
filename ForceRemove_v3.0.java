@@ -57,10 +57,12 @@ backs up every removed component so the run can be reversed.
 
 Modes (operationMode) - how the target list is built
 ------------------------------------------------------
-  Direct  Recursive walk from targetOrd: deletes every matching
-          descendant AND targetOrd itself (last). recurse and
-          removeFolders are always on, so a folder is emptied then
-          removed, and a single point given as targetOrd is removed.
+  Direct  Recursive walk from each target: deletes every matching
+          descendant AND the target itself (last). Targets come from the
+          multi-line targetList slot (one ord per line, #-comments
+          ignored); if targetList is empty, the single targetOrd is used.
+          recurse and removeFolders are always on, so a folder is emptied
+          then removed, and a single point given as a target is removed.
           nameFilter/typeFilter still decide which descendants match.
   BQL     targetOrd is a BQL query; every result row is a target.
           Materialized into memory before removal starts (a BQL
@@ -133,9 +135,10 @@ private static final String QUICK_GUIDE =
   "=====================================\n" +
   "\n" +
   "Target modes (operationMode):\n" +
-  "  Direct  recursive walk from targetOrd - deletes every matching\n" +
-  "          descendant AND targetOrd itself (last). A single point as\n" +
-  "          targetOrd is removed; a folder is emptied then removed.\n" +
+  "  Direct  recursive walk from each target - deletes every matching\n" +
+  "          descendant AND the target itself (last). Targets come from\n" +
+  "          the multi-line targetList slot (one ord per line, # =\n" +
+  "          comment); if targetList is empty, targetOrd is used.\n" +
   "  BQL     every row returned by the targetOrd BQL query\n" +
   "  CSV     targetOrd points to a 1-column CSV of ords (header \"Ord\")\n" +
   "\n" +
@@ -2017,51 +2020,117 @@ private void processChildrenDirect(javax.baja.sys.BComponent parent, int[] count
   }
 }
 
+// Read the targetList multi-line String slot into a list of ord strings
+// (one per line; blank lines and #-comments ignored). Returns empty if
+// the slot is missing/blank.
+private java.util.List readTargetListLines()
+{
+  java.util.List out = new java.util.ArrayList();
+  String raw = null;
+  try
+  {
+    Object v = get("targetList");
+    if (v instanceof javax.baja.sys.BString)
+      raw = ((javax.baja.sys.BString) v).getString();
+    else if (v != null)
+      raw = v.toString();
+  }
+  catch (Throwable ignore) {}
+
+  if (raw == null) return out;
+  String[] lines = raw.split("\\r?\\n");
+  for (int i = 0; i < lines.length; i++)
+  {
+    String s = lines[i].trim();
+    if (s.length() == 0 || s.startsWith("#")) continue;
+    out.add(s);
+  }
+  return out;
+}
+
 private void executeDirect(long runStart) throws Exception
 {
   writeToLog("Target mode: DIRECT" + (isDryRun() ? " [DRY RUN]" : ""));
   log.info("[ForceRemove] Target mode: DIRECT");
 
-  javax.baja.naming.BOrd rootOrd = getTargetOrd();
-  if (rootOrd == null || rootOrd.isNull())
+  // Build the target list: prefer the multi-line targetList slot; if it
+  // is empty, fall back to the single targetOrd (back-compat).
+  java.util.List targetStrs = readTargetListLines();
+  boolean fromList = targetStrs.size() > 0;
+  if (!fromList)
   {
-    String msg = "[" + now() + "] ERROR: targetOrd not set";
-    setStatus(msg); log.warning("[ForceRemove] " + msg); writeToLog(msg);
-    return;
+    javax.baja.naming.BOrd rootOrd = getTargetOrd();
+    if (rootOrd == null || rootOrd.isNull())
+    {
+      String msg = "[" + now() +
+        "] ERROR: no targets - set targetList (one ord per line) or targetOrd";
+      setStatus(msg); log.warning("[ForceRemove] " + msg); writeToLog(msg);
+      return;
+    }
+    targetStrs.add(rootOrd.toString());
   }
 
-  Object resolved = rootOrd.resolve().get();
-  if (!(resolved instanceof javax.baja.sys.BComponent))
-  {
-    String msg = "[" + now() + "] ERROR: targetOrd is not a BComponent: " + rootOrd;
-    setStatus(msg); log.warning("[ForceRemove] " + msg); writeToLog(msg);
-    return;
-  }
-
-  javax.baja.sys.BComponent root = (javax.baja.sys.BComponent) resolved;
-  writeToLog("Target root: " + root.getSlotPath() +
+  writeToLog("Direct targets: " + targetStrs.size() +
+    (fromList ? " (from targetList)" : " (from targetOrd)") +
     "  nameFilter='" + getNameFilter() + "' typeFilter='" + getTypeFilter() +
-    "' (recurse + removeFolders always on; deletes targetOrd itself last)");
+    "' (recurse + removeFolders always on; each target deleted itself last)");
 
   int[] counts = new int[5];
-  processChildrenDirect(root, counts);
 
-  // Then delete targetOrd itself (option 3): a single point as targetOrd
-  // is removed; a folder is emptied by the walk above then removed here.
-  // Guard against deleting a station/root that has no parent component.
-  try
+  for (int t = 0; t < targetStrs.size(); t++)
   {
-    javax.baja.sys.BComponent rootParent = root.getParentComponent();
-    if (rootParent != null)
-      handleOneTarget(root, "Direct", counts);
-    else
-      writeToLog("targetOrd has no parent component - not deleting the root itself: "
-        + root.getSlotPath());
-  }
-  catch (Exception e)
-  {
-    counts[3]++;
-    writeToLog("ERROR deleting targetOrd itself: " + describeException(e));
+    if (isCancelled())
+    {
+      writeToLog("Direct run CANCELLED before target " + (t + 1) +
+        " of " + targetStrs.size());
+      break;
+    }
+
+    String ordStr = (String) targetStrs.get(t);
+    setStatus("[" + now() + "] Direct: target " + (t + 1) + " of " +
+      targetStrs.size() + " (" + ordStr + ")...");
+
+    Object resolved;
+    try { resolved = javax.baja.naming.BOrd.make(normalizeOrd(ordStr)).resolve().get(); }
+    catch (Throwable e)
+    {
+      counts[3]++;
+      writeToLog("ERROR: target cannot resolve: " + ordStr + " - " + describeException(e));
+      writeResultRow("(target)", ordStr, null, null,
+        "ERROR", "Cannot resolve: " + describeException(e), "Direct", "0.000");
+      continue;
+    }
+
+    if (!(resolved instanceof javax.baja.sys.BComponent))
+    {
+      counts[3]++;
+      writeToLog("ERROR: target is not a BComponent: " + ordStr);
+      writeResultRow("(target)", ordStr, null, null,
+        "ERROR", "Not a BComponent", "Direct", "0.000");
+      continue;
+    }
+
+    javax.baja.sys.BComponent root = (javax.baja.sys.BComponent) resolved;
+    writeToLog("Direct target root: " + root.getSlotPath());
+    processChildrenDirect(root, counts);
+
+    // Then delete the target itself: a single point is removed; a folder
+    // is emptied by the walk above then removed here. Guard against a
+    // parentless station root.
+    try
+    {
+      javax.baja.sys.BComponent rootParent = root.getParentComponent();
+      if (rootParent != null)
+        handleOneTarget(root, "Direct", counts);
+      else
+        writeToLog("Target has no parent component - not deleting the root itself: "
+          + root.getSlotPath());
+    }
+    catch (Exception e)
+    {
+      counts[3]++;
+      writeToLog("ERROR deleting target itself: " + describeException(e));
+    }
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
