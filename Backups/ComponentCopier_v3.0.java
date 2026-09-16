@@ -153,14 +153,6 @@ private static final String QUICK_GUIDE =
   "lines are extra sources (lines starting with # are ignored).\n" +
   "Every source is copied to every destination.\n" +
   "\n" +
-  "Folder sources: if a source ORD resolves to a folder, it is\n" +
-  "auto-expanded - each direct child is copied whole into the\n" +
-  "destination, and Niagara carries each child's full subtree, so\n" +
-  "the source's folder structure is PRESERVED (dst/<subfolder>/point,\n" +
-  "dst/point) with no wrapper folder for the source itself. Pointing\n" +
-  "at e.g. .../TESTING_1 photocopies its contents, structure intact.\n" +
-  "A non-folder source is copied as-is.\n" +
-  "\n" +
   "Actions:\n" +
   "  Execute           - run the configured mode\n" +
   "  Dry Run           - preview without changes\n" +
@@ -499,65 +491,6 @@ private javax.baja.sys.BComponent resolveSourceComponent(String ordStr)
     writeToLog(msg);
   }
   return null;
-}
-
-// Import-free folder test (matches ForceRemove's): baja:Folder or any
-// type whose name ends in "Folder". Needs no extra import.
-private boolean isFolderComponent(javax.baja.sys.BComponent c)
-{
-  try
-  {
-    javax.baja.sys.Type t = c.getType();
-    String moduleName = t.getModule().getModuleName();
-    String typeName = t.getTypeName();
-    if ("baja".equalsIgnoreCase(moduleName) && "Folder".equals(typeName))
-      return true;
-    if (typeName != null && typeName.endsWith("Folder"))
-      return true;
-    return false;
-  }
-  catch (Throwable t)
-  {
-    return false;
-  }
-}
-
-// Expand a resolved source into the list of components to copy. If src
-// is NOT a folder, the list is just [src] (copied whole). If src IS a
-// folder, the list is its DIRECT children - each copied whole. Niagara's
-// copy carries a component's entire subtree, so a child subfolder copies
-// with all its contents intact: the destination mirrors the source
-// layout (dst/<subfolder>/point, dst/point) with NO wrapper folder for
-// src itself. Pointing at .../TESTING_1 photocopies its contents,
-// structure preserved.
-private java.util.List expandSource(javax.baja.sys.BComponent src)
-{
-  java.util.List out = new java.util.ArrayList();
-  if (src == null) return out;
-
-  if (!isFolderComponent(src))
-  {
-    out.add(src);
-    return out;
-  }
-
-  javax.baja.sys.BComponent[] kids;
-  try { kids = src.getChildComponents(); }
-  catch (Throwable t)
-  {
-    writeToLog("EXPAND ERROR listing " + safeName(src) + ": " +
-      describeException(t));
-    return out;
-  }
-  for (int i = 0; i < kids.length; i++)
-    out.add(kids[i]);   // each direct child copied whole (subtree rides along)
-  return out;
-}
-
-private String safeName(javax.baja.sys.BComponent c)
-{
-  try { return c.getSlotPath().toString(); }
-  catch (Throwable t) { return "<unknown>"; }
 }
 
 // Read the maxArchives slot. Returns 10 if the slot is missing or
@@ -2086,24 +2019,13 @@ private void executeDirect(long runStart) throws Exception
     javax.baja.sys.BComponent src = resolveSourceComponent(srcOrdStr);
     if (src == null) { counts[2]++; continue; }
 
-    // Auto-expand: if the source is a folder, copy every component
-    // beneath it (recursing through folders); otherwise copy it as-is.
-    java.util.List toCopy = expandSource(src);
-    if (isFolderComponent(src))
-      writeToLog("Source '" + srcOrdStr + "' is a folder - expanded to " +
-        toCopy.size() + " component(s)");
+    setStatus("[" + now() + "] Processing source " + (s + 1) +
+      " of " + sourceOrds.size() + " (" + src.getName() + ")...");
 
-    for (int c = 0; c < toCopy.size(); c++)
-    {
-      javax.baja.sys.BComponent item = (javax.baja.sys.BComponent) toCopy.get(c);
-      setStatus("[" + now() + "] Processing source " + (s + 1) +
-        " of " + sourceOrds.size() + " (" + item.getName() + ")...");
-
-      String result = isVerify()
-        ? processVerify(item, dst, "Direct")
-        : processCopy(item, dst, "Direct");
-      countResult(counts, result);
-    }
+    String result = isVerify()
+      ? processVerify(src, dst, "Direct")
+      : processCopy(src, dst, "Direct");
+    countResult(counts, result);
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
@@ -2225,11 +2147,6 @@ private void executeBQL(long runStart) throws Exception
     javax.baja.sys.BComponent src = resolveSourceComponent(srcOrdStr);
     if (src == null) { counts[2] += destinations.size(); continue; }
 
-    java.util.List toCopy = expandSource(src);
-    if (isFolderComponent(src))
-      writeToLog("Source '" + srcOrdStr + "' is a folder - expanded to " +
-        toCopy.size() + " component(s)");
-
     for (int d = 0; d < destinations.size(); d++)
     {
       pairNum++;
@@ -2243,29 +2160,23 @@ private void executeBQL(long runStart) throws Exception
 
       javax.baja.sys.BComponent dst =
         (javax.baja.sys.BComponent) destinations.get(d);
+      setStatus("[" + now() + "] BQL: source " + (s + 1) + " of " +
+        sourceOrds.size() + " (" + src.getName() + "), destination " +
+        (d + 1) + " of " + destinations.size() + "...");
+      writeToLog("BQL " + src.getName() + " -> " + dst.getName());
 
-      for (int c = 0; c < toCopy.size(); c++)
+      try
       {
-        javax.baja.sys.BComponent item =
-          (javax.baja.sys.BComponent) toCopy.get(c);
-        setStatus("[" + now() + "] BQL: source " + (s + 1) + " of " +
-          sourceOrds.size() + " (" + item.getName() + "), destination " +
-          (d + 1) + " of " + destinations.size() + "...");
-        writeToLog("BQL " + item.getName() + " -> " + dst.getName());
-
-        try
-        {
-          String result = isVerify()
-            ? processVerify(item, dst, "BQL")
-            : processCopy(item, dst, "BQL");
-          countResult(counts, result);
-        }
-        catch (Exception e)
-        {
-          counts[2]++;
-          writeToLog("BQL ERROR on pair " + pairNum + ": " +
-            describeException(e));
-        }
+        String result = isVerify()
+          ? processVerify(src, dst, "BQL")
+          : processCopy(src, dst, "BQL");
+        countResult(counts, result);
+      }
+      catch (Exception e)
+      {
+        counts[2]++;
+        writeToLog("BQL ERROR on pair " + pairNum + ": " +
+          describeException(e));
       }
     }
   }
@@ -2426,11 +2337,6 @@ private void executeCSV(long runStart) throws Exception
     javax.baja.sys.BComponent src = resolveSourceComponent(srcOrdStr);
     if (src == null) { counts[2] += destinations.size(); continue; }
 
-    java.util.List toCopy = expandSource(src);
-    if (isFolderComponent(src))
-      writeToLog("Source '" + srcOrdStr + "' is a folder - expanded to " +
-        toCopy.size() + " component(s)");
-
     for (int d = 0; d < destinations.size(); d++)
     {
       pairNum++;
@@ -2444,29 +2350,23 @@ private void executeCSV(long runStart) throws Exception
 
       javax.baja.sys.BComponent dst =
         (javax.baja.sys.BComponent) destinations.get(d);
+      setStatus("[" + now() + "] CSV: source " + (s + 1) + " of " +
+        sourceOrds.size() + " (" + src.getName() + "), destination " +
+        (d + 1) + " of " + destinations.size() + "...");
+      writeToLog("CSV " + src.getName() + " -> " + dst.getName());
 
-      for (int c = 0; c < toCopy.size(); c++)
+      try
       {
-        javax.baja.sys.BComponent item =
-          (javax.baja.sys.BComponent) toCopy.get(c);
-        setStatus("[" + now() + "] CSV: source " + (s + 1) + " of " +
-          sourceOrds.size() + " (" + item.getName() + "), destination " +
-          (d + 1) + " of " + destinations.size() + "...");
-        writeToLog("CSV " + item.getName() + " -> " + dst.getName());
-
-        try
-        {
-          String result = isVerify()
-            ? processVerify(item, dst, "CSV")
-            : processCopy(item, dst, "CSV");
-          countResult(counts, result);
-        }
-        catch (Exception e)
-        {
-          counts[2]++;
-          writeToLog("CSV ERROR on pair " + pairNum + ": " +
-            describeException(e));
-        }
+        String result = isVerify()
+          ? processVerify(src, dst, "CSV")
+          : processCopy(src, dst, "CSV");
+        countResult(counts, result);
+      }
+      catch (Exception e)
+      {
+        counts[2]++;
+        writeToLog("CSV ERROR on pair " + pairNum + ": " +
+          describeException(e));
       }
     }
   }
