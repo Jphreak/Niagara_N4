@@ -3,7 +3,7 @@
 Program: ForceRemove (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
 Version: v3.0
-Date:    2026-09-15
+Date:    2026-09-18
 
 IMPORTS TAB - required rows:
   Predefined : java.util, javax.baja.nre.util, javax.baja.sys,
@@ -72,6 +72,17 @@ Changes
              ext is copied back onto the live point (the point itself was
              never deleted). This is what makes deleting an alarm/history
              ext off a point reversible.
+           - Protected targets: handleOneTarget() now hard-refuses two
+             kinds of target before anything else runs, in every mode and
+             even in dryRun - (1) anything under the station's Services
+             tree, and (2) this program itself or any folder it lives
+             inside. (2) exists because a folder delete removes its WHOLE
+             subtree: pointing a broad target (or an ancestor folder) at
+             this program's own container used to let a run delete the
+             folder the program is sitting in - and itself along with it
+             - mid-run. Both are logged as SKIPPED with a "PROTECTED"
+             reason; nothing else about the target's siblings or the rest
+             of the walk is affected.
 
 Purpose
 -------
@@ -222,6 +233,11 @@ private static final String QUICK_GUIDE =
   "  - If a query/CSV returns a folder AND items inside it, the folder\n" +
   "    is deleted first and the now-gone inner items are skipped\n" +
   "    quietly.\n" +
+  "  - Protected targets: the station's Services tree, this program\n" +
+  "    itself, and any folder this program lives inside are never\n" +
+  "    deleted, no matter what target/query matches them - logged as\n" +
+  "    SKIPPED (PROTECTED). Prevents a broad target from deleting the\n" +
+  "    folder this program is running in out from under itself.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives are\n" +
   "    kept (default 10). 0 = keep all.";
 
@@ -1951,6 +1967,65 @@ private String safeName(javax.baja.sys.BComponent c)
 }
 
 // ----------------------------------------------------
+// Protected targets (v3.0) - things this program will NEVER delete, no
+// matter what mode, dry-run state, or filter matched them. Checked once
+// per target in handleOneTarget(), before anything else.
+// ----------------------------------------------------
+
+// This program's own slot path, resolved once and cached (it can't
+// change mid-run). 'this' is not statically a BComponent in a Program
+// subclass (see getOrCreateBackupFolder()'s note), so getSlotPath() is
+// called via reflection, same pattern as updateVersion()/
+// updateQuickGuide().
+private String myPathCache = null;
+private boolean myPathResolved = false;
+
+private String resolveMyPath()
+{
+  if (myPathResolved) return myPathCache;
+  myPathResolved = true;
+  try
+  {
+    java.lang.reflect.Method m = this.getClass().getMethod(
+      "getSlotPath", new Class[]{});
+    Object ord = m.invoke(this, new Object[]{});
+    if (ord != null) myPathCache = ord.toString();
+  }
+  catch (Throwable ignore) {}
+  return myPathCache;
+}
+
+// Non-null (with a reason) if targetPath must never be deleted:
+//   - anywhere inside the station's Services tree (AlarmService,
+//     HistoryService, etc. - core station plumbing, never a valid
+//     removal target)
+//   - this program itself, or any folder it lives inside. A folder
+//     delete removes its WHOLE subtree, so an ancestor of this program
+//     is exactly as dangerous as targeting the program directly - that
+//     ancestor's subtree includes the running program, and deleting it
+//     deletes the job that's still in the middle of running (this is
+//     what "the program deleted itself mid-run" looks like from the
+//     target's side).
+// Deliberately does NOT protect siblings or unrelated descendants of
+// those folders - only the exact folder objects on the path down to
+// Services or to this program are off-limits.
+private String protectedReason(String targetPath)
+{
+  if (targetPath == null) return null;
+
+  if (targetPath.equals("/Services") || targetPath.startsWith("/Services/"))
+    return "inside the station Services tree";
+
+  String myPath = resolveMyPath();
+  if (myPath != null &&
+      (myPath.equals(targetPath) || myPath.startsWith(targetPath + "/")))
+    return "this program, or a folder it lives inside " +
+      "(deleting it would remove the running program)";
+
+  return null;
+}
+
+// ----------------------------------------------------
 // Core per-target handler
 // Removes a single matched target (folder or component). Writes its own
 // results-CSV row and log lines; updates counts in place.
@@ -2012,6 +2087,18 @@ private void handleOneTarget(
 
   try
   {
+    // Hard-protected targets: never removed, regardless of mode, dry
+    // run, or filters. Checked first, before anything else below.
+    String blocked = protectedReason(path);
+    if (blocked != null)
+    {
+      counts[2]++;
+      writeToLog("SKIP (PROTECTED - " + blocked + "): " + path);
+      writeResultRow(target.getName(), path, null, null,
+        "SKIPPED", "Protected target - " + blocked, originMode, "0.000");
+      return;
+    }
+
     // Nested-dedup guard: if an ancestor folder was already deleted this
     // run, this target no longer exists - skip quietly (not an error).
     if (!isDryRun() && !stillMounted(target))
