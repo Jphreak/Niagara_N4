@@ -7,44 +7,61 @@ Date:    2026-09-01
 
 Changes
 -------
-  v1.0   Initial release. Create/delete/verify Niagara component
-         links between source and target components (Direct / BQL /
-         CSV modes), 5-column CSV format (BOrd1, Slot1, Direction,
-         BOrd2, Slot2).
-  v1.01  Results CSV now archived with a timestamp every run, same as
-         the active log file.
-  v1.02  createSampleCsv changed from a property toggle to an Action.
-  v2.00  maxArchives + auto-pruning of old archives; Cancel action;
-         pruneArchives action; CSV reads forced to UTF-8; CSV parser
-         made quote-aware.
-  v2.01  Version-synced with Component Copier; no behavioural change
-         here.
-  v2.02- CSV error reporting matured across these four releases:
-  v2.05  every problem row (validation and processing) gets its own
+  pre-   Original LinkCreator, v1.0 through v2.06. Create/delete/verify
+  v3.0   Niagara component links between source and target components
+         (Direct / BQL / CSV modes), 5-column CSV format (BOrd1, Slot1,
+         Direction, BOrd2, Slot2). Grew across seven releases: results
+         CSV archived with a timestamp every run alongside the log
+         (v1.01), createSampleCsv changed from a property toggle to an
+         Action (v1.02), maxArchives + auto-pruning / Cancel action /
+         pruneArchives action / UTF-8 + quote-aware CSV parsing (v2.00),
+         and CSV error reporting matured over v2.02-v2.05 so every
+         problem row (validation and processing) gets its own
          results-CSV row, each BOrd is resolved (and reported)
          separately with a reason that's never blank
-         (describeException()), double-counted error rows were
-         fixed, and the slot is shown next to the ord
-         (ordWithSlot()).
-  v2.06  Version-synced with Component Copier; no behavioural change
-         here - the matching Copier release brought its own link
-         phase up to this program's CSV-error-reporting standard.
+         (describeException()), double-counted error rows were fixed,
+         and the slot is shown next to the ord (ordWithSlot()). Version
+         numbering continues here rather than restarting, since this is
+         the line ForceRemove / Component Copier v3.0 aligned to; the
+         earlier releases are collapsed into this "pre-v3.0" line.
   v3.0   Multiple sources: sourceOrd/sourceSlot merged into one
-         multi-line linkSource slot ("ord,slot" per line); every
-         source now links to the target in Direct/BQL mode. BQL
-         target lists materialized into memory before linking
-         starts. buildLinkName() aligned with Component Copier's
-         formula so a link created by either program's link phase
-         gets the identical name for the same source/target/slot
-         inputs (previously the two programs generated different
-         names for the same link, so neither could recognize a link
-         the other had created - MIGRATION NOTE: any link created by
-         this program before this fix carries the OLD name and will
-         not be recognized as already existing under the new naming;
-         either rename the existing target slots to match, or let a
-         re-run create the correctly-named link alongside the old one
-         and remove the old one by hand once confirmed). Changes
-         section condensed to this format.
+         multi-line linkSource slot ("ord,slot" per line); every source
+         now links to the target in Direct/BQL mode. Notable points:
+           - BQL target lists are materialized into memory before
+             linking starts (a BQL cursor can only be walked once).
+           - buildLinkName() aligned with Component Copier's formula so
+             a link created by either program's link phase gets the
+             identical name for the same source/target/slot inputs
+             (previously the two programs generated different names
+             for the same link, so neither could recognize a link the
+             other had created).
+           - MIGRATION NOTE: any link created by this program before
+             this fix carries the OLD name and will not be recognized
+             as already existing under the new naming; either rename
+             the existing target slots to match, or let a re-run
+             create the correctly-named link alongside the old one and
+             remove the old one by hand once confirmed.
+           - Changes section condensed to the pre-/v3.0 format used by
+             ForceRemove / Component Copier.
+           - Verify fixed: onVerify() used to run its own separate
+             verifyLinks() implementation that re-walked Direct/BQL/CSV
+             from scratch and only ever logged FOUND/MISSING - it never
+             wrote a single row to resultsCsvPath, even though
+             initResultsCsv() ran first and every other action's rows go
+             there. verifyLinks() is gone; verify now runs through the
+             SAME runJob() -> executeDirect/BQL/CSV -> processLink() path
+             as execute/dryRun/reverse (isVerify() branch, mirroring
+             ComponentCopier's isVerify()/processLinkRow()), so it writes
+             a FOUND/MISSING row per link like every other outcome and
+             can't drift out of sync with a real run again.
+           - Cosmetic uniformity pass across all three programs:
+             getTargetModeOrdinal()/safePath() renamed to
+             getModeOrdinal()/safeName() in ForceRemove to match this
+             program and Component Copier, and ForceRemove's
+             resolveToFile/appendLine/clearFile/archiveFile/pruneArchives
+             picked up the explanatory comments this program and
+             Component Copier already carried on the otherwise-identical
+             code.
 
 Purpose
 -------
@@ -89,6 +106,9 @@ Key features
   - CSV mode now lists every problem row (validation + processing) in
     the results CSV with a reason, so troubleshooting no longer needs
     the log file.
+  - verify writes a FOUND/MISSING row per link to the results CSV (same
+    as every other action), since it runs through the same processing
+    path as execute/dryRun/reverse rather than a separate audit pass.
   - Cancel action stops long-running BQL / CSV passes cleanly.
   - All output paths (log, archive, results CSV, sample CSV) are
     user-configurable Ord slots; archive log inherits the active log's
@@ -424,6 +444,15 @@ private boolean isDryRun()
   return dryRunActive;
 }
 
+// Set by onVerify() to make isVerify() report true for the duration of
+// that one invocation. onExecute() and onDryRun() both reset it on entry.
+private boolean verifyActive = false;
+
+private boolean isVerify()
+{
+  return verifyActive;
+}
+
 private boolean isDeleteMode()
 {
   try
@@ -535,7 +564,38 @@ private java.io.File resolveToFile(String pathOrOrd)
   if (stationRelative || !f.isAbsolute())
     f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
 
-  return f;
+  return sandboxToStationHome(f, pathOrOrd);
+}
+
+// Security: log/results/sample/manifest paths must resolve to somewhere
+// under the station's own home folder. Canonicalizes f and verifies
+// containment so neither an absolute path (e.g. "file:C:\Windows\...")
+// nor a "../" segment in a station-relative path can escape onto the
+// wider filesystem. Returns null (refusing the write/read) if it can't
+// verify containment - every caller already no-ops safely on null.
+private java.io.File sandboxToStationHome(java.io.File f, String original)
+{
+  try
+  {
+    java.io.File home = javax.baja.sys.Sys.getStationHome().getCanonicalFile();
+    java.io.File canon = f.getCanonicalFile();
+    if (canon.equals(home) ||
+        canon.getPath().startsWith(home.getPath() + java.io.File.separator))
+      return canon;
+  }
+  catch (Exception e)
+  {
+    String msg = "PATH ERROR: could not verify '" + original + "' - " + e.getMessage();
+    setStatus("[" + now() + "] " + msg);
+    log.warning("[LinkCreator] " + msg);
+    return null;
+  }
+
+  String msg = "PATH SANDBOX: refusing '" + original +
+    "' - resolves outside the station home folder";
+  setStatus("[" + now() + "] " + msg);
+  log.warning("[LinkCreator] " + msg);
+  return null;
 }
 
 // ----------------------------------------------------
@@ -792,6 +852,16 @@ private void writeResultsSummary(
   long totalMs)
 {
   appendLine(resolveResultsCsvPath(), "");
+  if (isVerify())
+  {
+    // In verify mode the slots are reused as Found/Missing/Errors.
+    writeToResults("Total,Found:" + linked +
+      " Missing:" + skipped +
+      " Errors:" + errors +
+      " TotalTime:" + totalMs + "ms" +
+      (isCancelled() ? " [CANCELLED]" : ""));
+    return;
+  }
   writeToResults("Total,Linked:" + linked +
     " Skipped:" + skipped +
     " Errors:" + errors +
@@ -799,6 +869,25 @@ private void writeResultsSummary(
     " Deleted:" + deleted +
     " TotalTime:" + totalMs + "ms" +
     (isCancelled() ? " [CANCELLED]" : ""));
+}
+
+// Build a one-line summary appropriate for the current run mode. Verify
+// runs report Found/Missing/Errors; link/dry-run/reverse runs keep the
+// original Linked/Skipped/Errors/DryRun/Deleted layout. Mirrors
+// ComponentCopier's buildSummary().
+private String buildSummary(String modeLabel, int[] counts, long totalMs)
+{
+  String tail = isCancelled() ? " [CANCELLED]" : "";
+  if (isVerify())
+  {
+    return modeLabel + " complete - Found:" + counts[0] +
+      " Missing:" + counts[1] + " Errors:" + counts[2] +
+      " TotalTime:" + totalMs + "ms" + tail;
+  }
+  return modeLabel + " complete - Linked:" + counts[0] +
+    " Skipped:" + counts[1] + " Errors:" + counts[2] +
+    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
+    " TotalTime:" + totalMs + "ms" + tail;
 }
 
 // Write a single VALIDATION problem row to the results CSV.
@@ -875,11 +964,16 @@ private String buildLinkName(
 
 private int[] countResult(int[] counts, String result)
 {
+  // counts[0]=linked, [1]=skipped, [2]=errors, [3]=dryrun, [4]=deleted
+  // In verify mode the same array is reused as:
+  //   counts[0]=found, [1]=missing, [2]=errors
   if (result.equals("LINKED"))       counts[0]++;
   else if (result.equals("SKIPPED")) counts[1]++;
   else if (result.equals("ERROR"))   counts[2]++;
   else if (result.equals("DRYRUN"))  counts[3]++;
   else if (result.equals("DELETED")) counts[4]++;
+  else if (result.equals("FOUND"))   counts[0]++;
+  else if (result.equals("MISSING")) counts[1]++;
   return counts;
 }
 
@@ -1078,251 +1172,9 @@ private String[] parseCsvRow(String line)
 }
 
 // ----------------------------------------------------
-// Link Verification - checks expected links exist
-// without creating or deleting anything
-// ----------------------------------------------------
-private void verifyLinks() throws Exception
-{
-  writeToLog("--- VERIFY MODE ---");
-  log.info("[LinkCreator] Mode: VERIFY");
-  setStatus("[" + now() + "] Verifying links...");
-
-  int mode = getModeOrdinal();
-  int found = 0;
-  int missing = 0;
-  int errors = 0;
-
-  if (mode == 0) // Direct
-  {
-    javax.baja.naming.BOrd tgtOrd = getTargetOrd();
-    java.util.List sources = getLinkSources();
-
-    if (sources.isEmpty() || tgtOrd == null || tgtOrd.isNull())
-    {
-      writeToLog("VERIFY ERROR: linkSource or targetOrd not set");
-      return;
-    }
-
-    javax.baja.sys.BComponent tgtComp =
-      (javax.baja.sys.BComponent) tgtOrd.resolve().get();
-
-    for (int s = 0; s < sources.size(); s++)
-    {
-      LinkSourceSpec spec = (LinkSourceSpec) sources.get(s);
-      javax.baja.sys.BComponent srcComp = resolveSourceComponent(spec.ord);
-      if (srcComp == null) { errors++; continue; }
-
-      String linkName = buildLinkName(srcComp, spec.slot, getTargetSlot());
-      if (tgtComp.getSlot(linkName) != null)
-      {
-        writeToLog("VERIFY OK: " + linkName + " EXISTS");
-        found++;
-      }
-      else
-      {
-        writeToLog("VERIFY MISSING: " + linkName + " NOT FOUND");
-        missing++;
-      }
-    }
-  }
-  else if (mode == 1) // BQL
-  {
-    javax.baja.naming.BOrd tgtOrd = getTargetOrd();
-    java.util.List sources = getLinkSources();
-
-    if (sources.isEmpty() || tgtOrd == null || tgtOrd.isNull())
-    {
-      writeToLog("VERIFY ERROR: linkSource or targetOrd not set");
-      return;
-    }
-
-    Object bqlResult = tgtOrd.resolve().get();
-    java.lang.reflect.Method cursorMethod =
-      bqlResult.getClass().getMethod("cursor");
-    Object cursor = cursorMethod.invoke(bqlResult);
-
-    java.lang.reflect.Method nextMethod =
-      cursor.getClass().getMethod("next");
-    java.lang.reflect.Method getMethod =
-      cursor.getClass().getMethod("get");
-    java.lang.reflect.Method closeMethod =
-      cursor.getClass().getMethod("close");
-
-    // Materialize the target list BEFORE verifying (v3.0, ported
-    // from Component Copier v2.07) -- a BQL cursor can only be
-    // walked once, and multiple sources need to check the same
-    // target set.
-    java.util.List targets = new java.util.ArrayList();
-    int rowNum = 0;
-    try
-    {
-      while (((Boolean) nextMethod.invoke(cursor)).booleanValue())
-      {
-        rowNum++;
-
-        if (isCancelled())
-        {
-          writeToLog("VERIFY target read CANCELLED before row " + rowNum);
-          break;
-        }
-
-        try
-        {
-          targets.add(getMethod.invoke(cursor));
-        }
-        catch (Exception e)
-        {
-          errors++;
-          writeToLog("VERIFY ERROR reading row " + rowNum + ": " +
-            describeException(e));
-        }
-      }
-    }
-    finally { closeMethod.invoke(cursor); }
-
-    writeToLog("VERIFY BQL targets captured: " + targets.size() +
-      " | Sources: " + sources.size());
-
-    outerVerify:
-    for (int s = 0; s < sources.size(); s++)
-    {
-      LinkSourceSpec spec = (LinkSourceSpec) sources.get(s);
-      javax.baja.sys.BComponent srcComp = resolveSourceComponent(spec.ord);
-      if (srcComp == null) { errors += targets.size(); continue; }
-
-      for (int t = 0; t < targets.size(); t++)
-      {
-        if (isCancelled())
-        {
-          writeToLog("VERIFY CANCELLED before source " + (s + 1) +
-            ", target " + (t + 1));
-          break outerVerify;
-        }
-
-        try
-        {
-          javax.baja.sys.BComponent tgtComp =
-            (javax.baja.sys.BComponent) targets.get(t);
-          String linkName = buildLinkName(srcComp, spec.slot, getTargetSlot());
-          if (tgtComp.getSlot(linkName) != null)
-          {
-            writeToLog("VERIFY OK: " + tgtComp.getName() +
-              " -> " + linkName + " EXISTS");
-            found++;
-          }
-          else
-          {
-            writeToLog("VERIFY MISSING: " + tgtComp.getName() +
-              " -> " + linkName + " NOT FOUND");
-            missing++;
-          }
-        }
-        catch (Exception e)
-        {
-          errors++;
-          writeToLog("VERIFY ERROR on source " + (s + 1) + ", target " +
-            (t + 1) + ": " + describeException(e));
-        }
-      }
-    }
-  }
-  else if (mode == 2) // CSV
-  {
-    javax.baja.naming.BOrd csvOrd = resolveCsvOrd();
-    if (csvOrd == null)
-    {
-      writeToLog("VERIFY ERROR: No CSV file found");
-      return;
-    }
-
-    javax.baja.file.BIFile csvFile =
-      (javax.baja.file.BIFile) csvOrd.resolve().get();
-    java.io.InputStream is = csvFile.getInputStream();
-    java.io.BufferedReader br = new java.io.BufferedReader(
-      new java.io.InputStreamReader(is, "UTF-8"));
-
-    int rowNum = 0;
-    String line;
-    try
-    {
-      while ((line = br.readLine()) != null)
-      {
-        rowNum++;
-        if (rowNum == 1) continue;
-        line = line.trim();
-        if (line.isEmpty()) continue;
-
-        // Cancellation checkpoint
-        if (isCancelled())
-        {
-          writeToLog("VERIFY CANCELLED before row " + rowNum);
-          break;
-        }
-
-        String[] cols = parseCsvRow(line);
-        if (cols.length < 5) continue;
-
-        String bord1Str  = cols[0];
-        String slot1Str  = cols[1];
-        String direction = cols[2];
-        String bord2Str  = cols[3];
-        String slot2Str  = cols[4];
-
-        try
-        {
-          javax.baja.sys.BComponent comp1 = (javax.baja.sys.BComponent)
-            javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
-          javax.baja.sys.BComponent comp2 = (javax.baja.sys.BComponent)
-            javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
-
-          javax.baja.sys.BComponent srcComp =
-            direction.equals(">") ? comp1 : comp2;
-          javax.baja.sys.BComponent tgtComp =
-            direction.equals(">") ? comp2 : comp1;
-          String srcSlot = direction.equals(">") ? slot1Str : slot2Str;
-          String tgtSlot = direction.equals(">") ? slot2Str : slot1Str;
-
-          String linkName = buildLinkName(srcComp, srcSlot, tgtSlot);
-          if (tgtComp.getSlot(linkName) != null)
-          {
-            writeToLog("VERIFY OK row " + rowNum + ": " +
-              srcComp.getName() + " -> " + tgtComp.getName() +
-              " [" + linkName + "] EXISTS");
-            found++;
-          }
-          else
-          {
-            writeToLog("VERIFY MISSING row " + rowNum + ": " +
-              srcComp.getName() + " -> " + tgtComp.getName() +
-              " [" + linkName + "] NOT FOUND");
-            missing++;
-          }
-        }
-        catch (Exception e)
-        {
-          errors++;
-          writeToLog("VERIFY ERROR on row " + rowNum + ": " + e.getMessage());
-        }
-      }
-    }
-    finally
-    {
-      br.close();
-      is.close();
-    }
-  }
-
-  String summary = "VERIFY complete - Found:" + found +
-    " Missing:" + missing + " Errors:" + errors +
-    (isCancelled() ? " [CANCELLED]" : "");
-  setStatus("[" + now() + "] " + summary);
-  log.info("[LinkCreator] " + summary);
-  writeToLog(summary);
-}
-
-// ----------------------------------------------------
 // Core link processor
-// Returns: LINKED / SKIPPED / ERROR / DRYRUN / DELETED
+// Returns: LINKED / SKIPPED / ERROR / DRYRUN / DELETED / FOUND / MISSING
+// (FOUND / MISSING are verify-mode outcomes and never mutate the station.)
 // ----------------------------------------------------
 private String processLink(
   javax.baja.sys.BComponent srcComp, String srcSlotStr,
@@ -1337,6 +1189,43 @@ private String processLink(
     String tgtSlotPath = tgtComp.getSlotPath().toString();
 
     writeToLog("Processing link: " + linkName);
+
+    // ---------------- VERIFY (audit only) ----------------
+    if (isVerify())
+    {
+      boolean exists = (tgtComp.getSlot(linkName) != null);
+      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
+        (System.nanoTime() - t0) / 1000000.0);
+
+      if (exists)
+      {
+        String detail = "VERIFY OK: " + linkName + " EXISTS --> " +
+          srcComp.getName() + "[" + srcSlotStr + "] -> " +
+          tgtComp.getName() + "[" + tgtSlotStr + "]";
+        setStatus("[" + now() + "] " + detail);
+        log.info("[LinkCreator] " + detail);
+        writeToLog(detail);
+        writeToResults(csvEscape(now()) + "," +
+          csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
+          csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
+          "FOUND,Link exists," + csvEscape(mode) + "," +
+          csvEscape(linkName) + "," + durStr);
+        return "FOUND";
+      }
+
+      String detail = "VERIFY MISSING: " + linkName + " NOT FOUND --> " +
+        srcComp.getName() + "[" + srcSlotStr + "] -> " +
+        tgtComp.getName() + "[" + tgtSlotStr + "]";
+      setStatus("[" + now() + "] " + detail);
+      log.warning("[LinkCreator] " + detail);
+      writeToLog(detail);
+      writeToResults(csvEscape(now()) + "," +
+        csvEscape(srcComp.getName()) + "," + csvEscape(srcSlotPath) + "," +
+        csvEscape(tgtComp.getName()) + "," + csvEscape(tgtSlotPath) + "," +
+        "MISSING,Link not found," + csvEscape(mode) + "," +
+        csvEscape(linkName) + "," + durStr);
+      return "MISSING";
+    }
 
     // ---------------- DELETE MODE ----------------
     if (isDeleteMode())
@@ -1475,8 +1364,9 @@ private String processLink(
 private void executeDirect(long runStart) throws Exception
 {
   writeToLog("Mode: DIRECT" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE]" : ""));
+    (isVerify()  ? " [VERIFY]"  : "") +
+    (isDryRun()  ? " [DRY RUN]" : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
   log.info("[LinkCreator] Mode: DIRECT");
 
   javax.baja.naming.BOrd tgtOrd = getTargetOrd();
@@ -1517,11 +1407,7 @@ private void executeDirect(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
-  String tail = isCancelled() ? " [CANCELLED]" : "";
-  String summary = "Direct complete - Linked:" + counts[0] +
-    " Skipped:" + counts[1] + " Errors:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms" + tail;
+  String summary = buildSummary("Direct", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   writeToLog(summary);
   writeResultsSummary(
@@ -1534,8 +1420,9 @@ private void executeDirect(long runStart) throws Exception
 private void executeBQL(long runStart) throws Exception
 {
   writeToLog("Mode: BQL" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE]" : ""));
+    (isVerify()  ? " [VERIFY]"  : "") +
+    (isDryRun()  ? " [DRY RUN]" : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
   log.info("[LinkCreator] Mode: BQL");
 
   javax.baja.naming.BOrd tgtOrd = getTargetOrd();
@@ -1658,11 +1545,7 @@ private void executeBQL(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
-  String tail = isCancelled() ? " [CANCELLED]" : "";
-  String summary = "BQL complete - Linked:" + counts[0] +
-    " Skipped:" + counts[1] + " Errors:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms" + tail;
+  String summary = buildSummary("BQL", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
@@ -1676,8 +1559,9 @@ private void executeBQL(long runStart) throws Exception
 private void executeCSV(long runStart) throws Exception
 {
   writeToLog("Mode: CSV" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE]" : ""));
+    (isVerify()  ? " [VERIFY]"  : "") +
+    (isDryRun()  ? " [DRY RUN]" : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
   log.info("[LinkCreator] Mode: CSV");
 
   javax.baja.naming.BOrd csvOrd = resolveCsvOrd();
@@ -1908,11 +1792,7 @@ private void executeCSV(long runStart) throws Exception
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
-  String tail = isCancelled() ? " [CANCELLED]" : "";
-  String summary = "CSV complete - Linked:" + counts[0] +
-    " Skipped:" + counts[1] + " Errors:" + counts[2] +
-    " DryRun:" + counts[3] + " Deleted:" + counts[4] +
-    " TotalTime:" + totalMs + "ms" + tail;
+  String summary = buildSummary("CSV", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   log.info("[LinkCreator] " + summary);
   writeToLog(summary);
@@ -1932,6 +1812,7 @@ public void onStart() throws Exception
 public void onExecute() throws Exception
 {
   dryRunActive = false;
+  verifyActive = false;
   cancelRequested = false;
   runJob();
 }
@@ -1939,9 +1820,25 @@ public void onExecute() throws Exception
 public void onDryRun() throws Exception
 {
   dryRunActive = true;
+  verifyActive = false;
   cancelRequested = false;
   try { runJob(); }
   finally { dryRunActive = false; }
+}
+
+// Verify is audit-only: it must never create, delete, or dry-run-preview
+// a link, so dryRunActive stays off and verifyActive is set for the
+// duration of this invocation. Routes through the same runJob() ->
+// executeDirect/BQL/CSV -> processLink() path as execute/dryRun/reverse
+// (mirrors ComponentCopier's onVerify()) so verify can never drift out
+// of sync with what a real run does.
+public void onVerify() throws Exception
+{
+  dryRunActive = false;
+  verifyActive = true;
+  cancelRequested = false;
+  try { runJob(); }
+  finally { verifyActive = false; }
 }
 
 private void runJob() throws Exception
@@ -1951,10 +1848,14 @@ private void runJob() throws Exception
   archiveLogFile();
   initResultsCsv();
 
-  log.info("[LinkCreator] " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered");
-  writeToLog(VERSION + " " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered" +
-    (isDryRun() ? " [DRY RUN]" : "") +
-    (isDeleteMode() ? " [DELETE MODE]" : ""));
+  String trigger = isVerify() ? "onVerify"
+                  : isDryRun() ? "onDryRun"
+                               : "onExecute";
+  log.info("[LinkCreator] " + trigger + " triggered");
+  writeToLog(VERSION + " " + trigger + " triggered" +
+    (isVerify()  ? " [VERIFY]"   : "") +
+    (isDryRun()  ? " [DRY RUN]"  : "") +
+    (isDeleteMode() && !isVerify() ? " [DELETE MODE]" : ""));
 
   int mode = getModeOrdinal();
   writeToLog("Operation mode: " + mode +
@@ -1977,27 +1878,6 @@ private void runJob() throws Exception
     setStatus("[" + now() + "] " + detail);
     log.severe("[LinkCreator] EXCEPTION - " + e.getMessage());
     writeToLog("EXCEPTION - " + e.getMessage());
-  }
-}
-
-public void onVerify() throws Exception
-{
-  dryRunActive = false;
-  cancelRequested = false;
-  archiveLogFile();
-  initResultsCsv();
-  writeToLog(VERSION + " onVerify triggered");
-
-  try
-  {
-    verifyLinks();
-  }
-  catch (Exception e)
-  {
-    String detail = "VERIFY ERROR: " + e.getMessage();
-    setStatus("[" + now() + "] " + detail);
-    log.severe("[LinkCreator] " + detail);
-    writeToLog(detail);
   }
 }
 
@@ -2039,6 +1919,7 @@ public void onPruneArchives() throws Exception
 public void onCreateSampleCsv() throws Exception
 {
   dryRunActive = false;
+  verifyActive = false;
   cancelRequested = false;
 
   setStatus("[" + now() + "] Writing sample CSV file...");
