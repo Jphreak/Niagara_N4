@@ -1,6 +1,6 @@
 # Niagara_N4
 Tridium N4 Useful Objects
-Force Remove v3.0
+Force Remove v3.0 (Direct, BQL, CSV)
 - Allows removal of components
 - Reversal of Removal
   
