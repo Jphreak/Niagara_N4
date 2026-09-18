@@ -3,48 +3,68 @@
 Program: Component Copier (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
 Version: v3.0
-Date:    2026-09-01
+Date:    2026-09-18
 
 Changes
 -------
-  v1.0   Initial release. Multi-destination component copy (Direct /
-         BQL / CSV modes). Inspired by Giantsbane's "Photocopier"
-         (https://ddc-talk.com/) - this program expands that original
-         concept with multi-mode destinations, dry-run support,
-         sample-CSV generation, and an integrated link-creation phase.
-  v1.01  Results CSV now archived with a timestamp every run, same as
-         the active log file.
-  v1.02  Added Verify action (audit-only, no changes).
-  v1.03  createSampleCsv changed from a property toggle to an Action.
-  v1.04  Links-only mode: componentToCopy and copyTo both unset +
-         linksCsvPath set now runs the link phase only.
-  v2.00  maxArchives + auto-pruning of old archives; Cancel action;
-         pruneArchives action; CSV reads forced to UTF-8; CSV parser
-         made quote-aware.
-  v2.01  Reverse mode now removes links before deleting components
-         (order was backwards); link phase gained live row progress.
-  v2.02- Link phase's CSV error reporting matured across these four
-  v2.05  releases: every problem row gets its own results-CSV row,
-         each BOrd is resolved (and reported) separately, reasons are
-         never blank (describeException()), and the slot is shown
-         next to the ord (ordWithSlot()).
-  v2.06  Link phase given its own linkerLogPath / linkerResultsCsvPath,
-         fully brought up to the CSV-error-reporting standard above.
-  v2.07  Multiple sources (additionalSources slot): every source
-         copied to every destination. Recursion guard added (skip a
-         destination nested inside its own source). BQL/CSV
-         destination lists now materialized into memory before any
-         copying starts.
-  v2.08  componentToCopy and additionalSources merged into one
-         multi-line slot: componentSource.
-  v2.09  Renamed "Multi-Location Component Copier" -> "Component
-         Copier" (cosmetic: title, log tag, logger name, default
-         file paths).
-  v3.0   Synced to LinkCreator's multi-source model. LinkCreator's
-         buildLinkName() aligned with this program's so a link
-         created by either program's link phase gets the identical
-         name for the same source/target/slot inputs. Changes section
-         condensed to this format.
+  pre-   Original Component Copier, v1.0 through v2.09. Multi-
+  v3.0   destination component copy (Direct / BQL / CSV modes).
+         Inspired by Giantsbane's "Photocopier" (https://ddc-talk.com/)
+         - this program expands that original concept with multi-mode
+         destinations, dry-run support, sample-CSV generation, and an
+         integrated link-creation phase. Grew across ten releases:
+         results CSV archived with a timestamp every run alongside the
+         log (v1.01), Verify action added (v1.02), createSampleCsv
+         changed from a property toggle to an Action (v1.03), links-only
+         mode added (v1.04), maxArchives + auto-pruning / Cancel action /
+         pruneArchives action / UTF-8 + quote-aware CSV parsing (v2.00),
+         reverse-mode link/delete ordering fixed and the link phase
+         gained live row progress (v2.01), link phase CSV error
+         reporting matured over v2.02-v2.05 so every problem row gets
+         its own results-CSV row with a never-blank reason
+         (describeException()) and the slot shown next to the ord
+         (ordWithSlot()), the link phase given its own linkerLogPath /
+         linkerResultsCsvPath (v2.06), multiple sources added with a
+         recursion guard against a destination nested inside its own
+         source (v2.07), componentToCopy and additionalSources merged
+         into one multi-line componentSource slot (v2.08), and a
+         cosmetic rename to "Component Copier" (v2.09). The earlier
+         releases are collapsed into this "pre-v3.0" line.
+  v3.0   Synced to LinkCreator's multi-source model; LinkCreator's
+         buildLinkName() aligned with this program's so a link created
+         by either program's link phase gets the identical name for the
+         same source/target/slot inputs. Notable points:
+           - Folder-source copy fixed: a folder source used to be
+             exploded into its direct children, each copied in its own
+             separate Mark.copyTo() call, so the destination mirrored
+             the source's contents with no wrapper folder. That broke
+             keepAllLinks - Niagara's link-remap only sees the subtree
+             inside ONE copyTo() call, so a link from one child to a
+             sibling child kept pointing at the ORIGINAL source
+             component after copy instead of its new copy (links
+             weren't relative to the copy). Every source (folder,
+             point, extension, anything) is now copied WHOLE as a
+             single unit in one copyTo() call by default, regardless
+             of type, so its full subtree - and every internal link in
+             it - moves and remaps together. A folder source lands at
+             the destination as itself (dst/<folderName>/...) rather
+             than flattened into its children.
+           - FLATTEN mode: a trailing "*" on a componentSource line
+             (".../TESTING_1/*") requests the pre-v3.0 behaviour for
+             that one source - the folder's direct children are copied
+             individually into the destination with no wrapper folder
+             (dst/<subfolder>/point, dst/point). Since Niagara can't
+             remap links across separate copyTo() calls,
+             processInternalLinks() captures every link internal to
+             the folder's subtree BEFORE/AFTER the child copies (walks
+             getLinks() on every descendant) and recreates each one at
+             the destination through the SAME processLinkRow() the
+             linksCsvPath phase uses, so it is fully
+             verify/dryRun/reverse-aware and logs to the normal linker
+             log/results CSV. Reverse ordering matches the linksCsvPath
+             phase: links removed first, then the flattened components.
+           - Changes section condensed to the pre-/v3.0 format used by
+             ForceRemove / LinkCreator.
 
 Inspiration
 -----------
@@ -90,7 +110,14 @@ Actions
 
 Key features
 ------------
-  - keepAllLinks toggle preserves incoming links on the copied component
+  - keepAllLinks toggle preserves incoming links on the copied component.
+    Every source (folder, point, extension, anything) copies as one
+    atomic unit by default, so links between components inside a copied
+    folder stay correctly relative to the new copy.
+  - FLATTEN mode: a trailing "*" on a componentSource line copies that
+    folder's CONTENTS into the destination instead of the folder itself
+    (no wrapper folder, matching pre-v3.0 behaviour), and recreates the
+    folder's internal links at the destination afterward.
   - deleteComponent toggle removes the source-named component from each
     destination instead of copying
   - Optional post-copy link phase - if linksCsvPath is set, the program
@@ -153,13 +180,21 @@ private static final String QUICK_GUIDE =
   "lines are extra sources (lines starting with # are ignored).\n" +
   "Every source is copied to every destination.\n" +
   "\n" +
-  "Folder sources: if a source ORD resolves to a folder, it is\n" +
-  "auto-expanded - each direct child is copied whole into the\n" +
-  "destination, and Niagara carries each child's full subtree, so\n" +
-  "the source's folder structure is PRESERVED (dst/<subfolder>/point,\n" +
-  "dst/point) with no wrapper folder for the source itself. Pointing\n" +
-  "at e.g. .../TESTING_1 photocopies its contents, structure intact.\n" +
-  "A non-folder source is copied as-is.\n" +
+  "Folder sources: by default a folder source is copied WHOLE, as a\n" +
+  "single unit - same as any other source type (point, extension,\n" +
+  "etc). The destination gets the folder itself with its full subtree\n" +
+  "intact (dst/<folderName>/...), and links between components inside\n" +
+  "that subtree stay correctly relative to the new copy. Pointing at\n" +
+  "e.g. .../TESTING_1 copies TESTING_1 itself into the destination.\n" +
+  "\n" +
+  "FLATTEN mode: add a trailing \"*\" to a source line, e.g.\n" +
+  ".../TESTING_1/*, to instead copy that folder's CONTENTS - each\n" +
+  "direct child copied individually into the destination, no wrapper\n" +
+  "folder (dst/<subfolder>/point, dst/point). The folder's internal\n" +
+  "links (between its own children/descendants) are automatically\n" +
+  "recreated at the destination afterward - see the linker log for\n" +
+  "detail. Only applies to a folder source; \"*\" on a non-folder\n" +
+  "source is ignored.\n" +
   "\n" +
   "Actions:\n" +
   "  Execute           - run the configured mode\n" +
@@ -203,7 +238,12 @@ private static final String QUICK_GUIDE =
   "    each destination is attempted; a destination that is the\n" +
   "    source itself, or is nested inside the source, is always\n" +
   "    skipped (prevents recursive copies).\n" +
-  "  - keepAllLinks=true preserves incoming links on copy\n" +
+  "  - keepAllLinks=true preserves links on copy. Every source\n" +
+  "    copies as one atomic unit by default, so links between\n" +
+  "    components inside a copied folder stay relative to the new\n" +
+  "    copy. Add \"*\" to a folder source line to flatten its\n" +
+  "    contents instead (no wrapper folder) - internal links are\n" +
+  "    recreated at the destination afterward either way.\n" +
   "  - deleteComponent=true (Reverse Changes) UNDOES a previous\n" +
   "    run: the link phase removes the listed links FIRST, then\n" +
   "    the copy phase removes the source-named components from\n" +
@@ -472,6 +512,28 @@ private java.util.List getSourceOrdStrings()
   return out;
 }
 
+// A trailing "*" on a componentSource line (".../TESTING_1/*" or
+// ".../TESTING_1*") requests FLATTEN mode for that one source: copy the
+// folder's CONTENTS into the destination (no wrapper folder for the
+// folder itself), same as pre-v3.0 behaviour. Every other source line
+// (no "*") copies the source WHOLE, as a single unit - see
+// expandSource(). Has no effect on a non-folder source.
+private boolean isFlattenMarker(String rawOrdStr)
+{
+  return rawOrdStr != null && rawOrdStr.trim().endsWith("*");
+}
+
+// Strips a trailing flatten marker ("*" or "/*") off a raw
+// componentSource line, returning the plain ORD string to resolve.
+private String stripFlattenMarker(String rawOrdStr)
+{
+  String s = rawOrdStr.trim();
+  if (!s.endsWith("*")) return s;
+  s = s.substring(0, s.length() - 1);
+  if (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+  return s;
+}
+
 // Resolves a source ORD string to a BComponent, logging (and
 // returning null) if it cannot be resolved to one. Used by the
 // multi-source loop in each execute* method.
@@ -522,20 +584,32 @@ private boolean isFolderComponent(javax.baja.sys.BComponent c)
   }
 }
 
-// Expand a resolved source into the list of components to copy. If src
-// is NOT a folder, the list is just [src] (copied whole). If src IS a
-// folder, the list is its DIRECT children - each copied whole. Niagara's
-// copy carries a component's entire subtree, so a child subfolder copies
-// with all its contents intact: the destination mirrors the source
-// layout (dst/<subfolder>/point, dst/point) with NO wrapper folder for
-// src itself. Pointing at .../TESTING_1 photocopies its contents,
-// structure preserved.
-private java.util.List expandSource(javax.baja.sys.BComponent src)
+// Expand a resolved source into the list of components to copy.
+//
+// Default (flatten=false): the source is copied WHOLE, as a single unit,
+// via one Mark.copyTo() call - regardless of type (folder, point,
+// extension, etc.). The list is [src]. Because the whole subtree travels
+// in one copyTo() call, Niagara's own link-remap correctly relativizes
+// links between components inside a copied folder - this is what fixes
+// keepAllLinks for folder sources.
+//
+// flatten=true (a trailing "*" on the source line - see
+// isFlattenMarker()) restores the pre-v3.0 behaviour for a folder
+// source: the list is its DIRECT children, each copied whole in its own
+// copyTo() call, so the destination mirrors the folder's CONTENTS with
+// NO wrapper folder (dst/<subfolder>/point, dst/point). Since each child
+// is copied separately, Niagara's link-remap can't see across those
+// calls, so links between siblings inside the folder are NOT
+// automatically preserved by copyTo() - the caller (see
+// processInternalLinks()) must capture and recreate them afterward.
+// flatten has no effect on a non-folder source - it always copies whole.
+private java.util.List expandSource(
+  javax.baja.sys.BComponent src, boolean flatten)
 {
   java.util.List out = new java.util.ArrayList();
   if (src == null) return out;
 
-  if (!isFolderComponent(src))
+  if (!flatten || !isFolderComponent(src))
   {
     out.add(src);
     return out;
@@ -558,6 +632,196 @@ private String safeName(javax.baja.sys.BComponent c)
 {
   try { return c.getSlotPath().toString(); }
   catch (Throwable t) { return "<unknown>"; }
+}
+
+// ======================================================
+// Internal-link recreation for FLATTEN-mode folder sources (v3.0)
+// ======================================================
+// A FLATTEN-mode folder source (expandSource(src, true)) copies each
+// direct child in its own separate Mark.copyTo() call, so Niagara's
+// link-remap never sees the folder's children together and can't
+// relativize a link between two siblings. This block captures every
+// link INTERNAL to the source folder's subtree (both ends under the
+// folder) and recreates the equivalent link at the destination via the
+// SAME processLinkRow() the linksCsvPath phase uses - so it is fully
+// verify/dryRun/reverse aware and logs to the normal linker log/results
+// CSV alongside any configured linksCsvPath links.
+
+// Reflection helper for BLink introspection (ported from ForceRemove's
+// reverse-support captureLinks()). Calls a no-arg method, returns null
+// on any failure.
+private Object invoke0(Object target, String method)
+{
+  try
+  {
+    java.lang.reflect.Method m = target.getClass().getMethod(method, new Class[]{});
+    return m.invoke(target, new Object[]{});
+  }
+  catch (Throwable t) { return null; }
+}
+
+private String strOf(Object o)
+{
+  if (o == null) return "";
+  try { return o.toString(); } catch (Throwable t) { return ""; }
+}
+
+// One internal link, captured as full slot paths + slot names under the
+// SOURCE folder (not yet remapped to the destination).
+private static class InternalLink
+{
+  String srcPath, srcSlot, tgtPath, tgtSlot;
+  InternalLink(String srcPath, String srcSlot, String tgtPath, String tgtSlot)
+  {
+    this.srcPath = srcPath; this.srcSlot = srcSlot;
+    this.tgtPath = tgtPath; this.tgtSlot = tgtSlot;
+  }
+}
+
+// Recursively collect every component in comp's subtree, comp included.
+private void collectSubtree(
+  javax.baja.sys.BComponent comp, java.util.List out)
+{
+  out.add(comp);
+  javax.baja.sys.BComponent[] kids;
+  try { kids = comp.getChildComponents(); }
+  catch (Throwable t) { return; }
+  for (int i = 0; i < kids.length; i++)
+    collectSubtree(kids[i], out);
+}
+
+// Walk folder's whole subtree and capture every link whose source AND
+// target are both inside that subtree (an "internal" link). A BLink is
+// a child slot on its TARGET component, so getLinks() on each subtree
+// member returns that member's inbound links.
+private java.util.List captureInternalLinks(javax.baja.sys.BComponent folder)
+{
+  java.util.List out = new java.util.ArrayList();
+  String folderPath;
+  try { folderPath = folder.getSlotPath().toString(); }
+  catch (Throwable t) { return out; }
+  String folderPrefix = folderPath + "/";
+
+  java.util.List subtree = new java.util.ArrayList();
+  collectSubtree(folder, subtree);
+
+  for (int i = 0; i < subtree.size(); i++)
+  {
+    javax.baja.sys.BComponent tgtOwner =
+      (javax.baja.sys.BComponent) subtree.get(i);
+
+    javax.baja.sys.BLink[] links;
+    try { links = tgtOwner.getLinks(); }
+    catch (Throwable t) { continue; }
+
+    for (int j = 0; j < links.length; j++)
+    {
+      javax.baja.sys.BLink lk = links[j];
+      try
+      {
+        String targetSlot = strOf(invoke0(lk, "getTargetSlotName"));
+        String sourceSlot = strOf(invoke0(lk, "getSourceSlotName"));
+        if (sourceSlot.length() == 0 || targetSlot.length() == 0) continue;
+
+        javax.baja.sys.BComponent srcComp = null;
+        try
+        {
+          Object srcOrdObj = invoke0(lk, "getSourceOrd");
+          if (srcOrdObj instanceof javax.baja.naming.BOrd)
+          {
+            Object so = ((javax.baja.naming.BOrd) srcOrdObj)
+              .resolve(tgtOwner, null).get();
+            if (so instanceof javax.baja.sys.BComponent)
+              srcComp = (javax.baja.sys.BComponent) so;
+          }
+        }
+        catch (Throwable ignore) {}
+        if (srcComp == null) continue;
+
+        String tgtPath = tgtOwner.getSlotPath().toString();
+        String srcPath = srcComp.getSlotPath().toString();
+
+        // Internal only: both ends inside the folder subtree (or on the
+        // folder itself, in the unlikely case a link touches it directly).
+        boolean srcInside = srcPath.equals(folderPath) || srcPath.startsWith(folderPrefix);
+        boolean tgtInside = tgtPath.equals(folderPath) || tgtPath.startsWith(folderPrefix);
+        if (!srcInside || !tgtInside) continue;
+
+        out.add(new InternalLink(srcPath, sourceSlot, tgtPath, targetSlot));
+      }
+      catch (Throwable t)
+      {
+        writeToLog("INTERNAL LINK CAPTURE ERROR under " + folderPath + ": " +
+          describeException(t));
+      }
+    }
+  }
+
+  return out;
+}
+
+// Capture folder's internal links, remap each endpoint from under the
+// source folder to under the destination (string substitution -
+// copyTo() preserves each child's relative structure and name, so a
+// path under folderPath maps 1:1 to the same relative path under dst),
+// resolve both remapped endpoints at the destination, and recreate the
+// link via the same processLinkRow() the linksCsvPath phase uses. An
+// endpoint that fails to resolve at the destination (e.g. a SKIPPED
+// copy) is logged and that one link is skipped; the rest still run.
+private void processInternalLinks(
+  javax.baja.sys.BComponent folder, javax.baja.sys.BComponent dst)
+{
+  String folderPath, dstPath;
+  try
+  {
+    folderPath = folder.getSlotPath().toString();
+    dstPath = dst.getSlotPath().toString();
+  }
+  catch (Throwable t)
+  {
+    writeToLog("INTERNAL LINKS ERROR: could not read source/destination path - " +
+      describeException(t));
+    return;
+  }
+
+  java.util.List links = captureInternalLinks(folder);
+  if (links.isEmpty()) return;
+
+  writeToLinkerLog("Internal links captured under '" + folderPath +
+    "': " + links.size() + " - remapping to '" + dstPath + "'" +
+    (isDeleteMode() && !isVerify() ? " (reverse)" : ""));
+
+  for (int i = 0; i < links.size(); i++)
+  {
+    InternalLink lk = (InternalLink) links.get(i);
+
+    String newSrcPath = dstPath + lk.srcPath.substring(folderPath.length());
+    String newTgtPath = dstPath + lk.tgtPath.substring(folderPath.length());
+
+    javax.baja.sys.BComponent srcComp = null;
+    javax.baja.sys.BComponent tgtComp = null;
+    try
+    {
+      Object so = javax.baja.naming.BOrd.make(normalizeOrd(newSrcPath)).resolve().get();
+      if (so instanceof javax.baja.sys.BComponent) srcComp = (javax.baja.sys.BComponent) so;
+    }
+    catch (Throwable ignore) {}
+    try
+    {
+      Object to = javax.baja.naming.BOrd.make(normalizeOrd(newTgtPath)).resolve().get();
+      if (to instanceof javax.baja.sys.BComponent) tgtComp = (javax.baja.sys.BComponent) to;
+    }
+    catch (Throwable ignore) {}
+
+    if (srcComp == null || tgtComp == null)
+    {
+      writeToLinkerLog("INTERNAL LINK SKIPPED: could not resolve at destination - " +
+        newSrcPath + "[" + lk.srcSlot + "] -> " + newTgtPath + "[" + lk.tgtSlot + "]");
+      continue;
+    }
+
+    processLinkRow(srcComp, lk.srcSlot, tgtComp, lk.tgtSlot);
+  }
 }
 
 // Read the maxArchives slot. Returns 10 if the slot is missing or
@@ -648,7 +912,38 @@ private java.io.File resolveToFile(String pathOrOrd)
   if (stationRelative || !f.isAbsolute())
     f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
 
-  return f;
+  return sandboxToStationHome(f, pathOrOrd);
+}
+
+// Security: log/results/sample/manifest paths must resolve to somewhere
+// under the station's own home folder. Canonicalizes f and verifies
+// containment so neither an absolute path (e.g. "file:C:\Windows\...")
+// nor a "../" segment in a station-relative path can escape onto the
+// wider filesystem. Returns null (refusing the write/read) if it can't
+// verify containment - every caller already no-ops safely on null.
+private java.io.File sandboxToStationHome(java.io.File f, String original)
+{
+  try
+  {
+    java.io.File home = javax.baja.sys.Sys.getStationHome().getCanonicalFile();
+    java.io.File canon = f.getCanonicalFile();
+    if (canon.equals(home) ||
+        canon.getPath().startsWith(home.getPath() + java.io.File.separator))
+      return canon;
+  }
+  catch (Exception e)
+  {
+    String msg = "PATH ERROR: could not verify '" + original + "' - " + e.getMessage();
+    setStatus("[" + now() + "] " + msg);
+    log.warning("[ComponentCopier] " + msg);
+    return null;
+  }
+
+  String msg = "PATH SANDBOX: refusing '" + original +
+    "' - resolves outside the station home folder";
+  setStatus("[" + now() + "] " + msg);
+  log.warning("[ComponentCopier] " + msg);
+  return null;
 }
 
 // ----------------------------------------------------
@@ -2082,16 +2377,22 @@ private void executeDirect(long runStart) throws Exception
   int[] counts = new int[5];
   for (int s = 0; s < sourceOrds.size(); s++)
   {
-    String srcOrdStr = (String) sourceOrds.get(s);
+    String srcOrdStrRaw = (String) sourceOrds.get(s);
+    boolean flatten = isFlattenMarker(srcOrdStrRaw);
+    String srcOrdStr = flatten ? stripFlattenMarker(srcOrdStrRaw) : srcOrdStrRaw;
     javax.baja.sys.BComponent src = resolveSourceComponent(srcOrdStr);
     if (src == null) { counts[2]++; continue; }
 
-    // Auto-expand: if the source is a folder, copy every component
-    // beneath it (recursing through folders); otherwise copy it as-is.
-    java.util.List toCopy = expandSource(src);
+    boolean flattenFolder = flatten && isFolderComponent(src);
+    java.util.List toCopy = expandSource(src, flatten);
     if (isFolderComponent(src))
-      writeToLog("Source '" + srcOrdStr + "' is a folder - expanded to " +
-        toCopy.size() + " component(s)");
+      writeToLog("Source '" + srcOrdStr + "' is a folder - " +
+        (flattenFolder
+          ? "flattening into its contents (internal links recreated after copy)"
+          : "copying as a single unit (full subtree, internal links preserved)"));
+
+    boolean reverse = isDeleteMode() && !isVerify();
+    if (flattenFolder && reverse) processInternalLinks(src, dst);
 
     for (int c = 0; c < toCopy.size(); c++)
     {
@@ -2104,6 +2405,8 @@ private void executeDirect(long runStart) throws Exception
         : processCopy(item, dst, "Direct");
       countResult(counts, result);
     }
+
+    if (flattenFolder && !reverse) processInternalLinks(src, dst);
   }
 
   long totalMs = (System.nanoTime() - runStart) / 1000000L;
@@ -2221,14 +2524,21 @@ private void executeBQL(long runStart) throws Exception
   outerBql:
   for (int s = 0; s < sourceOrds.size(); s++)
   {
-    String srcOrdStr = (String) sourceOrds.get(s);
+    String srcOrdStrRaw = (String) sourceOrds.get(s);
+    boolean flatten = isFlattenMarker(srcOrdStrRaw);
+    String srcOrdStr = flatten ? stripFlattenMarker(srcOrdStrRaw) : srcOrdStrRaw;
     javax.baja.sys.BComponent src = resolveSourceComponent(srcOrdStr);
     if (src == null) { counts[2] += destinations.size(); continue; }
 
-    java.util.List toCopy = expandSource(src);
+    boolean flattenFolder = flatten && isFolderComponent(src);
+    java.util.List toCopy = expandSource(src, flatten);
     if (isFolderComponent(src))
-      writeToLog("Source '" + srcOrdStr + "' is a folder - expanded to " +
-        toCopy.size() + " component(s)");
+      writeToLog("Source '" + srcOrdStr + "' is a folder - " +
+        (flattenFolder
+          ? "flattening into its contents (internal links recreated after copy)"
+          : "copying as a single unit (full subtree, internal links preserved)"));
+
+    boolean reverse = isDeleteMode() && !isVerify();
 
     for (int d = 0; d < destinations.size(); d++)
     {
@@ -2243,6 +2553,8 @@ private void executeBQL(long runStart) throws Exception
 
       javax.baja.sys.BComponent dst =
         (javax.baja.sys.BComponent) destinations.get(d);
+
+      if (flattenFolder && reverse) processInternalLinks(src, dst);
 
       for (int c = 0; c < toCopy.size(); c++)
       {
@@ -2267,6 +2579,8 @@ private void executeBQL(long runStart) throws Exception
             describeException(e));
         }
       }
+
+      if (flattenFolder && !reverse) processInternalLinks(src, dst);
     }
   }
 
@@ -2422,14 +2736,21 @@ private void executeCSV(long runStart) throws Exception
   outerCsv:
   for (int s = 0; s < sourceOrds.size(); s++)
   {
-    String srcOrdStr = (String) sourceOrds.get(s);
+    String srcOrdStrRaw = (String) sourceOrds.get(s);
+    boolean flatten = isFlattenMarker(srcOrdStrRaw);
+    String srcOrdStr = flatten ? stripFlattenMarker(srcOrdStrRaw) : srcOrdStrRaw;
     javax.baja.sys.BComponent src = resolveSourceComponent(srcOrdStr);
     if (src == null) { counts[2] += destinations.size(); continue; }
 
-    java.util.List toCopy = expandSource(src);
+    boolean flattenFolder = flatten && isFolderComponent(src);
+    java.util.List toCopy = expandSource(src, flatten);
     if (isFolderComponent(src))
-      writeToLog("Source '" + srcOrdStr + "' is a folder - expanded to " +
-        toCopy.size() + " component(s)");
+      writeToLog("Source '" + srcOrdStr + "' is a folder - " +
+        (flattenFolder
+          ? "flattening into its contents (internal links recreated after copy)"
+          : "copying as a single unit (full subtree, internal links preserved)"));
+
+    boolean reverse = isDeleteMode() && !isVerify();
 
     for (int d = 0; d < destinations.size(); d++)
     {
@@ -2444,6 +2765,8 @@ private void executeCSV(long runStart) throws Exception
 
       javax.baja.sys.BComponent dst =
         (javax.baja.sys.BComponent) destinations.get(d);
+
+      if (flattenFolder && reverse) processInternalLinks(src, dst);
 
       for (int c = 0; c < toCopy.size(); c++)
       {
@@ -2468,6 +2791,8 @@ private void executeCSV(long runStart) throws Exception
             describeException(e));
         }
       }
+
+      if (flattenFolder && !reverse) processInternalLinks(src, dst);
     }
   }
 

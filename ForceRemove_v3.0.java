@@ -451,9 +451,11 @@ private java.io.File resolveToFile(String pathOrOrd)
   String p = pathOrOrd.trim();
   if (p.length() == 0) return null;
 
+  // Strip "file:" scheme if present
   if (p.startsWith("file:"))
     p = p.substring(5);
 
+  // "^" in a Niagara ORD means relative to station home
   boolean stationRelative = false;
   if (p.startsWith("^"))
   {
@@ -467,7 +469,38 @@ private java.io.File resolveToFile(String pathOrOrd)
   if (stationRelative || !f.isAbsolute())
     f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
 
-  return f;
+  return sandboxToStationHome(f, pathOrOrd);
+}
+
+// Security: log/results/sample/manifest paths must resolve to somewhere
+// under the station's own home folder. Canonicalizes f and verifies
+// containment so neither an absolute path (e.g. "file:C:\Windows\...")
+// nor a "../" segment in a station-relative path can escape onto the
+// wider filesystem. Returns null (refusing the write/read) if it can't
+// verify containment - every caller already no-ops safely on null.
+private java.io.File sandboxToStationHome(java.io.File f, String original)
+{
+  try
+  {
+    java.io.File home = javax.baja.sys.Sys.getStationHome().getCanonicalFile();
+    java.io.File canon = f.getCanonicalFile();
+    if (canon.equals(home) ||
+        canon.getPath().startsWith(home.getPath() + java.io.File.separator))
+      return canon;
+  }
+  catch (Exception e)
+  {
+    String msg = "PATH ERROR: could not verify '" + original + "' - " + e.getMessage();
+    setStatus("[" + now() + "] " + msg);
+    log.warning("[ForceRemove] " + msg);
+    return null;
+  }
+
+  String msg = "PATH SANDBOX: refusing '" + original +
+    "' - resolves outside the station home folder";
+  setStatus("[" + now() + "] " + msg);
+  log.warning("[ForceRemove] " + msg);
+  return null;
 }
 
 private void appendLine(String filePath, String line)
@@ -478,10 +511,12 @@ private void appendLine(String filePath, String line)
     java.io.File file = resolveToFile(filePath);
     if (file == null) return;
 
+    // Make sure the parent directory exists
     java.io.File parent = file.getParentFile();
     if (parent != null && !parent.exists())
       parent.mkdirs();
 
+    // append=true creates the file if it does not exist yet
     bw = new java.io.BufferedWriter(new java.io.OutputStreamWriter(
       new java.io.FileOutputStream(file, true), "UTF-8"));
     bw.write(line);
@@ -519,6 +554,7 @@ private void clearFile(String filePath)
     if (parent != null && !parent.exists())
       parent.mkdirs();
 
+    // append=false truncates if it exists, creates if it doesn't
     fos = new java.io.FileOutputStream(file, false);
   }
   catch (Exception e)
@@ -543,10 +579,14 @@ private void archiveFile(String activePath, String label)
     java.io.File archiveFile = resolveToFile(archivePath);
     if (archiveFile == null) return;
 
+    // Make sure the archive's parent folder exists
     java.io.File parent = archiveFile.getParentFile();
     if (parent != null && !parent.exists())
       parent.mkdirs();
 
+    // Atomically rename the active file to the timestamped archive.
+    // If rename fails (e.g. cross-filesystem or destination exists),
+    // fall back to byte copy then truncate the original.
     if (!activeFile.renameTo(archiveFile))
     {
       java.io.FileInputStream  fis = null;
@@ -564,6 +604,7 @@ private void archiveFile(String activePath, String label)
         if (fis != null) try { fis.close(); } catch (Exception ignore) {}
         if (fos != null) try { fos.close(); } catch (Exception ignore) {}
       }
+      // Truncate the original so the next run starts fresh
       clearFile(activePath);
     }
   }
@@ -578,7 +619,7 @@ private void pruneArchives(String activePath)
   try
   {
     int max = resolveMaxArchives();
-    if (max <= 0) return;
+    if (max <= 0) return; // 0 or negative means keep all
 
     java.io.File activeFile = resolveToFile(activePath);
     if (activeFile == null) return;
@@ -599,6 +640,7 @@ private void pruneArchives(String activePath)
         if (n.length() != expectedLen) return false;
         if (!n.startsWith(stem + "_")) return false;
         if (ext.length() > 0 && !n.endsWith(ext)) return false;
+        // Defensive: don't ever match the active file itself
         if (n.equals(stem + ext)) return false;
         return true;
       }
@@ -776,7 +818,7 @@ private String normalizeOrd(String ordStr)
   return ordStr;
 }
 
-private int getTargetModeOrdinal()
+private int getModeOrdinal()
 {
   try
   {
@@ -1217,7 +1259,7 @@ private boolean backupComponent(
       copySource = extParentPoint;   // copy the whole point
       note = "EXT:" + slotName;      // remember which ext to restore
       writeToLog("Backup: '" + slotName + "' is an extension - backing up " +
-        "its parent point " + safePath(extParentPoint));
+        "its parent point " + safeName(extParentPoint));
     }
 
     // Copy the source into the subfolder using the same Mark.copyTo
@@ -1902,7 +1944,7 @@ private void removeAllLinks(javax.baja.sys.BComponent c)
   catch (Throwable ignore) {}
 }
 
-private String safePath(javax.baja.sys.BComponent c)
+private String safeName(javax.baja.sys.BComponent c)
 {
   try { return c.getSlotPath().toString(); }
   catch (Throwable t) { return "<unknown>"; }
@@ -1966,7 +2008,7 @@ private void handleOneTarget(
   javax.baja.sys.BComponent target, String originMode, int[] counts)
 {
   long t0 = System.nanoTime();
-  String path = safePath(target);
+  String path = safeName(target);
 
   try
   {
@@ -2189,7 +2231,7 @@ private void processChildrenDirect(javax.baja.sys.BComponent parent, int[] count
   catch (Exception e)
   {
     counts[3]++;
-    writeToLog("ERROR listing children of " + safePath(parent) +
+    writeToLog("ERROR listing children of " + safeName(parent) +
       " : " + describeException(e));
     return;
   }
@@ -2198,7 +2240,7 @@ private void processChildrenDirect(javax.baja.sys.BComponent parent, int[] count
   {
     if (isCancelled())
     {
-      writeToLog("Direct walk CANCELLED under " + safePath(parent));
+      writeToLog("Direct walk CANCELLED under " + safeName(parent));
       return;
     }
 
@@ -2225,7 +2267,7 @@ private void processChildrenDirect(javax.baja.sys.BComponent parent, int[] count
     catch (Exception e)
     {
       counts[3]++;
-      writeToLog("ERROR on " + safePath(child) + " : " + describeException(e));
+      writeToLog("ERROR on " + safeName(child) + " : " + describeException(e));
     }
   }
 }
@@ -2729,7 +2771,7 @@ private void runJob() throws Exception
   writeToLog(VERSION + " " + (isDryRun() ? "onDryRun" : "onExecute") + " triggered" +
     (isDryRun() ? " [DRY RUN]" : ""));
 
-  int mode = getTargetModeOrdinal();
+  int mode = getModeOrdinal();
   writeToLog("Operation mode: " + mode + " (raw: " + getOperationMode().toString() + ")");
 
   // Prepare the reverse snapshot folder + manifest (no-op on dryRun).
