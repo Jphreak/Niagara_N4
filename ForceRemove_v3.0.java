@@ -5,6 +5,14 @@ Author:  F. Lacroix
 Version: v3.0
 Date:    2026-09-15
 
+IMPORTS TAB - required rows:
+  Predefined : java.util, javax.baja.nre.util, javax.baja.sys,
+               javax.baja.status, javax.baja.util, com.tridium.program
+  User Def.  : control-rt | javax.baja.control
+               file       | javax.baja.file
+               baja       | javax.baja.space   <-- for Mark (backup copy)
+  By Prop.   : baja       | javax.baja.naming
+
 Changes
 -------
   pre-   Original ForceRemovePoints. Direct tree-walk only (targetOrd +
@@ -46,6 +54,24 @@ Changes
              extension off a point, target the extension directly (BQL
              "select * from alarm:AlarmSourceExt", or a CSV/Direct target
              on the ext) - the point stays, only the ext goes.
+           - Backup now uses Mark.copyTo (the same intact-copy path
+             ComponentCopier uses) instead of newCopy(): a point copies
+             WITH its alarm/history extensions, a folder copies WITH its
+             whole subtree. Each backup lands in its own numbered
+             subfolder ForceRemoveBackup/bk_<seq>/ so same-named items
+             never collide. Folders are now backed up too (the folder-
+             delete path was previously deleting without a backup).
+             Requires the javax.baja.space import row for Mark (see
+             IMPORTS TAB above).
+           - Extension backup fix: an ext (alarm:AlarmSourceExt etc.)
+             cannot be parented by a plain folder - Mark.copyTo threw
+             IllegalParentException. When the target is an ext (its parent
+             is a BControlPoint) the backup instead copies the ext's
+             PARENT POINT into the holding subfolder, and the manifest
+             Note column records "EXT:<extName>". On reverse, only that
+             ext is copied back onto the live point (the point itself was
+             never deleted). This is what makes deleting an alarm/history
+             ext off a point reversible.
 
 Purpose
 -------
@@ -189,10 +215,13 @@ private static final String QUICK_GUIDE =
   "    the MOST RECENT run only.\n" +
   "\n" +
   "Tips:\n" +
-  "  - Targeting a non-empty folder force-empties it: every child is\n" +
-  "    deleted first (each backed up), then the folder is removed. If a\n" +
-  "    child can't be deleted, the folder is left in place so nothing\n" +
-  "    is orphaned.\n" +
+  "  - Targeting a folder deletes the WHOLE folder in one unit: its\n" +
+  "    points and their exts go with it (they are nested slots), and\n" +
+  "    the whole subtree is backed up in one copy for reverse. No need\n" +
+  "    to also list the points/exts inside it.\n" +
+  "  - If a query/CSV returns a folder AND items inside it, the folder\n" +
+  "    is deleted first and the now-gone inner items are skipped\n" +
+  "    quietly.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives are\n" +
   "    kept (default 10). 0 = keep all.";
 
@@ -1051,36 +1080,100 @@ private void captureLinks(javax.baja.sys.BComponent comp)
   { writeToLog("CAPTURE LINKS ERROR on " + compPath + ": " + describeException(t)); }
 }
 
-// Copy comp into the holding folder and append a manifest row. Returns
-// true only if the copy landed (caller uses this to decide whether the
-// delete may proceed). ownerPath/slotName are what reverse needs.
-// Deep-copy a component. Tries newCopy() (standard BObject API), then
-// newCopy(boolean), then a reflective clone. Returns null on failure.
-private javax.baja.sys.BComponent deepCopy(javax.baja.sys.BComponent comp)
+// Params component for Mark.copyTo - keepAllLinks=true so a copied
+// component carries its own links. Same shape ComponentCopier uses.
+private javax.baja.sys.BComponent makeBackupParams()
 {
-  // 1) newCopy()
+  javax.baja.sys.BComponent params = new javax.baja.sys.BComponent();
+  try { params.add("keepAllLinks", javax.baja.sys.BBoolean.make(true)); }
+  catch (Throwable ignore) {}
+  return params;
+}
+
+// Add a new empty BComponent child under 'parent' with the given name
+// and return the MOUNTED instance. Uses add(String,BValue) then re-reads
+// by name so callers get the live child (Mark.copyTo needs a mounted
+// destination). Returns null on failure.
+private javax.baja.sys.BComponent addChildComponent(
+  javax.baja.sys.BComponent parent, String name)
+{
   try
   {
-    Object c = invoke0(comp, "newCopy");
-    if (c instanceof javax.baja.sys.BComponent)
-      return (javax.baja.sys.BComponent) c;
+    javax.baja.sys.BComponent child = new javax.baja.sys.BComponent();
+    parent.add(name, child);
+    // Re-fetch the mounted instance.
+    javax.baja.sys.Slot s = parent.getSlot(name);
+    if (s != null && s.isProperty())
+    {
+      Object v = parent.get((javax.baja.sys.Property) s);
+      if (v instanceof javax.baja.sys.BComponent)
+        return (javax.baja.sys.BComponent) v;
+    }
+    return child;
+  }
+  catch (Throwable t)
+  {
+    writeToLog("addChildComponent ERROR for " + name + ": " + describeException(t));
+    return null;
+  }
+}
+
+// If comp is an EXTENSION living on a control point, return that parent
+// point; otherwise null. Used so ext backups copy the whole (legal-
+// parent) point rather than trying to parent the ext under a plain
+// folder, which throws IllegalParentException.
+//
+// An extension (alarm:AlarmSourceExt, history:*Ext, etc.) is NOT itself
+// a control point and NOT a folder. A child point nested under a
+// COMPOSITE point also has a control-point parent, but it IS a control
+// point - it is a normal point, not an ext, and must copy as itself. So
+// we require: parent is a BControlPoint AND comp is neither a control
+// point nor a folder.
+//
+// getParentComponent() on a BQL-returned component is unreliable (it can
+// hand back the component itself or a detached instance - the quirk that
+// broke removeChild), so we also derive the parent from the slot path.
+private javax.baja.sys.BComponent extParentPointOf(javax.baja.sys.BComponent comp)
+{
+  // comp must not itself be a point or a folder to be an extension.
+  try
+  {
+    if (comp instanceof javax.baja.control.BControlPoint) return null;
+    if (isFolderComponent(comp)) return null;
   }
   catch (Throwable ignore) {}
 
-  // 2) newCopy(boolean) - some builds take an "exact" flag.
+  // 1) Direct check first (cheap, works when the instance is live).
   try
   {
-    java.lang.reflect.Method m = comp.getClass().getMethod(
-      "newCopy", new Class[]{ boolean.class });
-    Object c = m.invoke(comp, new Object[]{ Boolean.TRUE });
-    if (c instanceof javax.baja.sys.BComponent)
-      return (javax.baja.sys.BComponent) c;
+    javax.baja.sys.BComponent parent = comp.getParentComponent();
+    if (parent instanceof javax.baja.control.BControlPoint)
+      return parent;
+  }
+  catch (Throwable ignore) {}
+
+  // 2) Path-derived check (robust for BQL-returned instances).
+  try
+  {
+    String p = comp.getSlotPath().toString();
+    int slash = p.lastIndexOf('/');
+    if (slash > 0)
+    {
+      String parentPath = p.substring(0, slash);
+      Object o = javax.baja.naming.BOrd.make(
+        normalizeOrd(parentPath)).resolve().get();
+      if (o instanceof javax.baja.control.BControlPoint)
+        return (javax.baja.sys.BComponent) o;
+    }
   }
   catch (Throwable ignore) {}
 
   return null;
 }
 
+// Copy comp into the holding folder and append a manifest row. Returns
+// true only if the copy landed (caller uses this to decide whether the
+// delete may proceed). ownerPath/slotName are what reverse needs.
 private boolean backupComponent(
   javax.baja.sys.BComponent comp, javax.baja.sys.BComponent owner,
   String slotName, String mode)
@@ -1094,18 +1187,57 @@ private boolean backupComponent(
     if (folder == null) return false;
 
     backupSeq++;
-    String holdingName = "bk_" + backupSeq + "_" + slotName;
-
-    // Deep copy of the live component (config + its own outbound links).
-    javax.baja.sys.BComponent copy = deepCopy(comp);
-    if (copy == null)
+    // Per-item subfolder so the backup keeps the component's ORIGINAL
+    // name and never collides with same-named items (e.g. the many
+    // OutOfRangeAlarmExt across points). Layout:
+    //   ForceRemoveBackup/bk_<seq>/<originalName>
+    String subName = "bk_" + backupSeq;
+    javax.baja.sys.BComponent sub = addChildComponent(folder, subName);
+    if (sub == null)
     {
-      writeToLog("BACKUP COPY ERROR for " + slotName +
-        ": newCopy() unavailable/failed");
+      writeToLog("BACKUP ERROR for " + slotName +
+        ": could not create holding subfolder " + subName);
       return false;
     }
 
-    folder.add(holdingName, copy);
+    // An extension (e.g. alarm:AlarmSourceExt) CANNOT be legally parented
+    // by a plain baja:Component - Mark.copyTo into the bare holding folder
+    // throws IllegalParentException. An ext can only live on its point.
+    // So when the target is an ext, we copy its PARENT POINT (which
+    // legally holds the ext) into the holding subfolder, and record the
+    // ext's slot name in the Note column as "EXT:<extName>". On reverse,
+    // we copy just that ext child off the stored point back onto the live
+    // point. For everything else (points, folders, ordinary components)
+    // we copy the target itself.
+    javax.baja.sys.BComponent copySource = comp;
+    String note = "";
+    javax.baja.sys.BComponent extParentPoint = extParentPointOf(comp);
+    if (extParentPoint != null)
+    {
+      copySource = extParentPoint;   // copy the whole point
+      note = "EXT:" + slotName;      // remember which ext to restore
+      writeToLog("Backup: '" + slotName + "' is an extension - backing up " +
+        "its parent point " + safePath(extParentPoint));
+    }
+
+    // Copy the source into the subfolder using the same Mark.copyTo
+    // mechanism ComponentCopier uses. A point copies WITH its extensions,
+    // a folder copies WITH its entire subtree, as one intact unit.
+    try
+    {
+      javax.baja.sys.BComponent params = makeBackupParams();
+      Mark mark = new Mark(copySource);
+      mark.copyTo(sub, params, null);
+    }
+    catch (Throwable t)
+    {
+      writeToLog("BACKUP COPY ERROR for " + slotName + ": " +
+        describeException(t));
+      return false;
+    }
+
+    // The copy landed inside the subfolder under copySource's own name.
+    String holdingName = subName;   // manifest points at the subfolder
 
     // Capture links BEFORE the caller deletes (links still live here).
     captureLinks(comp);
@@ -1130,6 +1262,9 @@ private boolean backupComponent(
       try { ownerPath = owner.getSlotPath().toString(); } catch (Throwable ignore) {}
     }
 
+    // For an ext backup, the owner is the point (removedPath's parent),
+    // and the ext must be restored onto that live point. ownerPath as
+    // derived above IS the point path, which is what reverse needs.
     appendLine(resolveManifestPath(),
       csvEscape(String.valueOf(backupSeq)) + "," +
       csvEscape(ownerPath) + "," +
@@ -1137,7 +1272,7 @@ private boolean backupComponent(
       csvEscape(removedPath) + "," +
       csvEscape(holdingName) + "," +
       csvEscape(mode) + "," +
-      csvEscape(""));
+      csvEscape(note));
     return true;
   }
   catch (Exception e)
@@ -1200,6 +1335,32 @@ private int depthOf(String slotPath)
   return d;
 }
 
+// Sort a list of BComponent targets shallowest slot-path first, so a
+// container folder is processed before its own contents. Components
+// whose path can't be read sort last (treated as deepest).
+private void sortTargetsShallowestFirst(java.util.List targets)
+{
+  try
+  {
+    java.util.Collections.sort(targets, new java.util.Comparator() {
+      public int compare(Object a, Object b) {
+        return depthOfComp(a) - depthOfComp(b);
+      }
+    });
+  }
+  catch (Throwable t)
+  {
+    writeToLog("Target sort skipped: " + describeException(t));
+  }
+}
+
+private int depthOfComp(Object o)
+{
+  if (!(o instanceof javax.baja.sys.BComponent)) return Integer.MAX_VALUE;
+  try { return depthOf(((javax.baja.sys.BComponent) o).getSlotPath().toString()); }
+  catch (Throwable t) { return Integer.MAX_VALUE; }
+}
+
 private void runReverse(long runStart) throws Exception
 {
   writeToLog("REVERSE triggered - restoring most recent run");
@@ -1248,8 +1409,9 @@ private void runReverse(long runStart) throws Exception
         writeToLog("REVERSE ERROR row " + rowNum + ": too few columns");
         continue;
       }
-      // [0]=ownerPath [1]=slotName [2]=holdingName
-      rows.add(new String[]{ cols[1], cols[2], cols[4] });
+      // [0]=ownerPath [1]=slotName [2]=holdingName [3]=note
+      String noteCol = (cols.length >= 7) ? cols[6] : "";
+      rows.add(new String[]{ cols[1], cols[2], cols[4], noteCol });
     }
   }
   finally
@@ -1335,8 +1497,9 @@ private void runReverse(long runStart) throws Exception
       }
       catch (Throwable ignore) {}
 
-      // Find the holding copy.
-      javax.baja.sys.BComponent holding = null;
+      // Find the holding subfolder (bk_<seq>), then the backed-up
+      // component inside it (under its original slotName).
+      javax.baja.sys.BComponent sub = null;
       try
       {
         javax.baja.sys.Slot hs = folder.getSlot(holdingName);
@@ -1344,7 +1507,72 @@ private void runReverse(long runStart) throws Exception
         {
           Object hv = folder.get((javax.baja.sys.Property) hs);
           if (hv instanceof javax.baja.sys.BComponent)
-            holding = (javax.baja.sys.BComponent) hv;
+            sub = (javax.baja.sys.BComponent) hv;
+        }
+      }
+      catch (Throwable ignore) {}
+
+      if (sub == null)
+      {
+        counts[3]++;
+        done[i] = true;
+        writeToLog("REVERSE ERROR: holding subfolder missing: " + holdingName);
+        continue;
+      }
+
+      String note = (r.length >= 4) ? r[3] : "";
+      boolean isExtRestore = note != null && note.startsWith("EXT:");
+
+      javax.baja.sys.BComponent holding = null;
+      try
+      {
+        if (isExtRestore)
+        {
+          // Ext backup: sub contains the whole PARENT POINT copy; the ext
+          // we want is a child of that point copy, under slotName. Dig
+          // one level: sub -> <pointCopy> -> <ext(slotName)>.
+          javax.baja.sys.BComponent pointCopy = null;
+          javax.baja.sys.BComponent[] subKids = sub.getChildComponents();
+          if (subKids.length > 0) pointCopy = subKids[0]; // the stored point
+          if (pointCopy != null)
+          {
+            javax.baja.sys.Slot es = pointCopy.getSlot(slotName);
+            if (es != null && es.isProperty())
+            {
+              Object ev = pointCopy.get((javax.baja.sys.Property) es);
+              if (ev instanceof javax.baja.sys.BComponent)
+                holding = (javax.baja.sys.BComponent) ev;
+            }
+          }
+          // Salvage: if the ext-in-point lookup fails, the row may have
+          // been wrongly flagged EXT (an earlier bug flagged whole points
+          // as exts). Fall back to treating the subfolder's own child as
+          // the thing to restore, and clear the ext flag so the copy-back
+          // targets the owner directly.
+          if (holding == null && subKids.length > 0)
+          {
+            holding = subKids[0];
+            isExtRestore = false;
+            writeToLog("REVERSE: '" + slotName + "' flagged EXT but no ext " +
+              "found in point copy - restoring the stored child directly.");
+          }
+        }
+        else
+        {
+          javax.baja.sys.Slot cs = sub.getSlot(slotName);
+          if (cs != null && cs.isProperty())
+          {
+            Object cv = sub.get((javax.baja.sys.Property) cs);
+            if (cv instanceof javax.baja.sys.BComponent)
+              holding = (javax.baja.sys.BComponent) cv;
+          }
+          // Fallback: exact name not found (renamed on copy-in) - take
+          // the subfolder's first child component.
+          if (holding == null)
+          {
+            javax.baja.sys.BComponent[] kids = sub.getChildComponents();
+            if (kids.length > 0) holding = kids[0];
+          }
         }
       }
       catch (Throwable ignore) {}
@@ -1353,22 +1581,19 @@ private void runReverse(long runStart) throws Exception
       {
         counts[3]++;
         done[i] = true;
-        writeToLog("REVERSE ERROR: holding copy missing: " + holdingName);
+        writeToLog("REVERSE ERROR: holding copy missing inside " + holdingName +
+          " (expected " + slotName + (isExtRestore ? ", ext-in-point" : "") + ")");
         continue;
       }
 
-      javax.baja.sys.BComponent back = deepCopy(holding);
-      if (back == null)
-      {
-        counts[3]++;
-        done[i] = true;
-        writeToLog("REVERSE ERROR: could not copy holding for " +
-          ownerPath + "/" + slotName);
-        continue;
-      }
+      // Copy the backed-up component back onto the owner using Mark.copyTo
+      // (the same intact-copy mechanism used at backup time). It lands
+      // under the holding component's own name = the original slotName.
       try
       {
-        owner.add(slotName, back);
+        javax.baja.sys.BComponent params = makeBackupParams();
+        Mark mark = new Mark(holding);
+        mark.copyTo(owner, params, null);
         counts[0]++;
         done[i] = true;
         restoredThisPass++;
@@ -1377,23 +1602,10 @@ private void runReverse(long runStart) throws Exception
       }
       catch (Throwable t)
       {
-        try
-        {
-          javax.baja.sys.BComponent back2 = deepCopy(holding);
-          owner.add(null, back2);
-          counts[0]++;
-          done[i] = true;
-          restoredThisPass++;
-          writeToLog("RESTORED (auto-named): " + ownerPath + "/" + slotName);
-          removeHoldingCopy(folder, holdingName);
-        }
-        catch (Throwable t2)
-        {
-          counts[3]++;
-          done[i] = true;
-          writeToLog("REVERSE ERROR adding " + ownerPath + "/" + slotName +
-            ": " + describeException(t2));
-        }
+        counts[3]++;
+        done[i] = true;
+        writeToLog("REVERSE ERROR copying back " + ownerPath + "/" + slotName +
+          ": " + describeException(t));
       }
     }
 
@@ -1728,6 +1940,28 @@ private boolean isFolderComponent(javax.baja.sys.BComponent c)
   }
 }
 
+// Is this component still mounted in the station? A BQL/CSV result set
+// can contain both a folder AND items inside it; once the folder is
+// deleted (whole subtree), those inner items no longer exist. Re-resolve
+// the target's slot path - if it no longer resolves to a live component,
+// it was already removed by an ancestor and we skip it silently.
+private boolean stillMounted(javax.baja.sys.BComponent target)
+{
+  String p;
+  try { p = target.getSlotPath().toString(); }
+  catch (Throwable t) { return false; }   // no path -> detached/gone
+  if (p == null || p.length() == 0) return false;
+  try
+  {
+    Object o = javax.baja.naming.BOrd.make(normalizeOrd(p)).resolve().get();
+    return (o instanceof javax.baja.sys.BComponent);
+  }
+  catch (Throwable t)
+  {
+    return false;   // cannot resolve -> already gone
+  }
+}
+
 private void handleOneTarget(
   javax.baja.sys.BComponent target, String originMode, int[] counts)
 {
@@ -1736,6 +1970,14 @@ private void handleOneTarget(
 
   try
   {
+    // Nested-dedup guard: if an ancestor folder was already deleted this
+    // run, this target no longer exists - skip quietly (not an error).
+    if (!isDryRun() && !stillMounted(target))
+    {
+      writeToLog("SKIP (already removed by an ancestor this run): " + path);
+      return;
+    }
+
     boolean isFolder = isFolderComponent(target);
 
     // ---------------- FOLDER (removeFolders is always on) ----------------
@@ -1743,62 +1985,13 @@ private void handleOneTarget(
     {
       if (!matchesName(target)) return; // typeFilter intentionally ignored on folders
 
-      javax.baja.sys.BComponent[] remaining;
-      try { remaining = target.getChildComponents(); }
-      catch (Exception e)
-      {
-        counts[3]++;
-        String reason = describeException(e);
-        writeToLog("ERROR inspecting folder " + path + " : " + reason);
-        writeResultRow(target.getName(), path, null, null,
-          "ERROR", reason, originMode, "0.000");
-        return;
-      }
-
-      if (remaining.length > 0)
-      {
-        // Targeted folder is non-empty: force-empty it by deleting each
-        // child first (recursing into subfolders), each backed up like
-        // any other delete, then fall through to remove the now-empty
-        // folder. This is the "recursively delete a folder's contents
-        // when the folder is targeted" behaviour.
-        if (isDryRun())
-        {
-          writeToLog("[DRY] would recursively delete " + remaining.length +
-            " child(ren) of folder: " + path);
-        }
-        for (int i = 0; i < remaining.length; i++)
-        {
-          if (isCancelled())
-          {
-            writeToLog("Folder-empty CANCELLED under " + path);
-            counts[2]++;
-            writeResultRow(target.getName(), path, null, null,
-              "SKIPPED", "Cancelled before folder emptied", originMode, "0.000");
-            return;
-          }
-          handleOneTarget(remaining[i], originMode, counts);
-        }
-
-        // Re-check: if anything survived (a child that skipped/errored),
-        // do NOT delete the folder - leave it so nothing is orphaned.
-        javax.baja.sys.BComponent[] after;
-        try { after = target.getChildComponents(); }
-        catch (Exception e) { after = new javax.baja.sys.BComponent[0]; }
-
-        if (after.length > 0 && !isDryRun())
-        {
-          counts[2]++;
-          String reason = "Still not empty after recursion (" +
-            after.length + " survived)";
-          writeToLog("SKIP folder (" + reason + "): " + path);
-          writeResultRow(target.getName(), path, null, null,
-            "SKIPPED", reason, originMode, "0.000");
-          return;
-        }
-        // else fall through to delete the (now empty) folder below
-      }
-
+      // A folder CONTAINS its points as slots, and each point contains
+      // its exts as slots - it is one nested tree. So we back up the
+      // WHOLE folder in one Mark.copyTo (captures the entire subtree:
+      // folder -> points -> exts) and delete it in one removeChild. No
+      // per-child recursion is needed: deleting the container takes
+      // everything beneath it with it, and reverse restores the whole
+      // subtree in one copy-back.
       javax.baja.sys.BComponent parent = target.getParentComponent();
       if (parent == null)
       {
@@ -1811,10 +2004,27 @@ private void handleOneTarget(
 
       if (isDryRun())
       {
+        int childCount = 0;
+        try { childCount = target.getChildComponents().length; } catch (Throwable ignore) {}
         counts[4]++;
-        writeToLog("[DRY] would delete empty folder: " + path);
+        writeToLog("[DRY] would delete folder (whole subtree, " + childCount +
+          " direct child(ren)): " + path);
         writeResultRow(target.getName(), path, null, null,
-          "DRYRUN", "Would delete empty folder", originMode, "0.000");
+          "DRYRUN", "Would delete folder + entire subtree", originMode, "0.000");
+        return;
+      }
+
+      // Back up the whole folder subtree before delete. If backup fails,
+      // do not delete.
+      boolean folderBackedUp =
+        backupComponent(target, parent, target.getName(), originMode);
+      if (!folderBackedUp)
+      {
+        counts[2]++;
+        writeToLog("SKIP folder (backup failed, not deleting): " + path);
+        writeResultRow(target.getName(), path, null, null,
+          "SKIPPED", "Backup failed - delete skipped to avoid data loss",
+          originMode, "0.000");
         return;
       }
 
@@ -1826,10 +2036,10 @@ private void handleOneTarget(
           String durStr = String.format(java.util.Locale.ROOT, "%.3f",
             (System.nanoTime() - t0) / 1000000.0);
           counts[1]++;
-          writeToLog("DELETED folder: " + path + " (" + durStr + "ms) [" +
-            r.substring(3) + "]");
+          writeToLog("DELETED folder (whole subtree): " + path + " (" +
+            durStr + "ms) [" + r.substring(3) + "]");
           writeResultRow(target.getName(), path, null, null,
-            "REMOVED", "Empty folder deleted", originMode, durStr);
+            "REMOVED", "Folder + subtree deleted", originMode, durStr);
         }
         else if (r.startsWith("SKIP:"))
         {
@@ -2206,6 +2416,11 @@ private void executeBQL(long runStart) throws Exception
   }
 
   writeToLog("BQL targets captured: " + targets.size());
+
+  // Sort shallowest-first so a folder is deleted (whole subtree) BEFORE
+  // any of its own contents that the query also returned; the nested-
+  // dedup guard in handleOneTarget then skips the now-gone children.
+  sortTargetsShallowestFirst(targets);
 
   for (int i = 0; i < targets.size(); i++)
   {
