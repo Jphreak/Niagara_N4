@@ -2,7 +2,7 @@
 Tridium N4 Useful Objects
 Force Remove v3.0
 - Allows removal of components
-- BETA *** Reversal of Removal ***
+- Reversal of Removal
   
 Component Copier v3.0 (Direct, BQL, CSV)
 - Allows the copying of objects from one area to many
