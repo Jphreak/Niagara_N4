@@ -3,7 +3,7 @@
 Program: LinkCreator (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
 Version: v3.0
-Date:    2026-09-01
+Date:    2026-09-18
 
 Changes
 -------
@@ -62,6 +62,13 @@ Changes
              picked up the explanatory comments this program and
              Component Copier already carried on the otherwise-identical
              code.
+           - Default source slot: a linkSource line with no ",slot"
+             (or a comma with nothing after it), and a blank Slot1/
+             Slot2 column in CSV mode, used to be a hard error - the
+             row was logged and skipped, since a link needs a slot to
+             attach to. Both now default to DEFAULT_SOURCE_SLOT ("out",
+             the conventional primary output on most control points)
+             instead of failing. A missing ORD is still an error.
 
 Purpose
 -------
@@ -140,6 +147,11 @@ private static final java.util.logging.Logger log =
 
 private static final String VERSION = "v3.0";
 
+// Slot a source defaults to when none is given (a bare ord with no
+// ",slot" in linkSource, or a blank Slot1/Slot2 CSV column) - "out" is
+// the conventional primary output slot on most control points.
+private static final String DEFAULT_SOURCE_SLOT = "out";
+
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
@@ -154,7 +166,9 @@ private static final String QUICK_GUIDE =
   "Sources: linkSource holds one \"ord,slot\" pair per line. The\n" +
   "first non-blank line is the primary source; further non-blank\n" +
   "lines are extra sources (lines starting with # are ignored).\n" +
-  "In Direct/BQL mode every source is linked to the target.\n" +
+  "In Direct/BQL mode every source is linked to the target. Leaving\n" +
+  "off \",slot\" (or leaving it blank) defaults the source slot to\n" +
+  "\"out\" - a bare ord line is a valid source.\n" +
   "\n" +
   "Actions:\n" +
   "  Execute           - run the configured mode\n" +
@@ -187,7 +201,9 @@ private static final String QUICK_GUIDE =
   "\n" +
   "Tips:\n" +
   "  - linkSource: one \"ord,slot\" source per line. Each source is\n" +
-  "    linked to the target in Direct/BQL mode.\n" +
+  "    linked to the target in Direct/BQL mode. No \",slot\" (or a\n" +
+  "    blank one) defaults to \"out\" - same for a blank Slot1/Slot2\n" +
+  "    column in CSV mode.\n" +
   "  - set deleteLinks=true to remove links instead of\n" +
   "    creating them. Dry Run previews delete-mode as well.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives\n" +
@@ -281,10 +297,10 @@ private String resolveLinkSource()
 // Parses linkSource into an ordered list of LinkSourceSpec. Each
 // non-blank, non-comment ("#") line is split on its FIRST comma:
 // everything before is the source ord, everything after is the
-// source slot. A line with no comma (no slot given) is logged and
-// skipped, since a link needs both. Duplicate "ord,slot" pairs are
-// skipped. The first entry in the returned list is the primary
-// source.
+// source slot. A line with no comma, or a comma with nothing after it,
+// defaults the slot to DEFAULT_SOURCE_SLOT ("out") rather than failing
+// - only a missing ORD is an error. Duplicate "ord,slot" pairs are
+// skipped. The first entry in the returned list is the primary source.
 private java.util.List getLinkSources()
 {
   java.util.List out = new java.util.ArrayList();
@@ -299,20 +315,32 @@ private java.util.List getLinkSources()
     String line = lines[i].trim();
     if (line.length() == 0 || line.startsWith("#")) continue;
 
+    String ord;
+    String slot;
     int comma = line.indexOf(',');
     if (comma < 0)
     {
-      writeToLog("SOURCE ERROR: linkSource line '" + line +
-        "' has no slot (expected \"ord,slot\") - skipped");
-      continue;
+      ord  = line;
+      slot = DEFAULT_SOURCE_SLOT;
+      writeToLog("linkSource line '" + line + "' has no slot - " +
+        "defaulting to '" + DEFAULT_SOURCE_SLOT + "'");
+    }
+    else
+    {
+      ord  = line.substring(0, comma).trim();
+      slot = line.substring(comma + 1).trim();
+      if (slot.length() == 0)
+      {
+        slot = DEFAULT_SOURCE_SLOT;
+        writeToLog("linkSource line '" + line + "' has no slot after " +
+          "the comma - defaulting to '" + DEFAULT_SOURCE_SLOT + "'");
+      }
     }
 
-    String ord  = line.substring(0, comma).trim();
-    String slot = line.substring(comma + 1).trim();
-    if (ord.length() == 0 || slot.length() == 0)
+    if (ord.length() == 0)
     {
       writeToLog("SOURCE ERROR: linkSource line '" + line +
-        "' is missing an ord or a slot - skipped");
+        "' is missing an ord - skipped");
       continue;
     }
 
@@ -1655,6 +1683,12 @@ private void executeCSV(long runStart) throws Exception
       String direction = cols[2];
       String bord2Str  = cols[3];
       String slot2Str  = cols[4];
+
+      // A blank Slot1/Slot2 column defaults to "out" (same convention
+      // as a bare ord with no slot in linkSource - see
+      // DEFAULT_SOURCE_SLOT) rather than failing later at link creation.
+      if (slot1Str.trim().length() == 0) slot1Str = DEFAULT_SOURCE_SLOT;
+      if (slot2Str.trim().length() == 0) slot2Str = DEFAULT_SOURCE_SLOT;
 
       // v2.04: resolve each BOrd in its own block so the ERROR row can
       // name exactly which ord failed and give a real reason.
