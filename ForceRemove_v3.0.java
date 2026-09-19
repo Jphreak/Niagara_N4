@@ -1986,13 +1986,40 @@ private String resolveMyPath()
   myPathResolved = true;
   try
   {
-    java.lang.reflect.Method m = this.getClass().getMethod(
-      "getSlotPath", new Class[]{});
-    Object ord = m.invoke(this, new Object[]{});
-    if (ord != null) myPathCache = ord.toString();
+    // Resolve the method on the PUBLIC BComponent class, not this
+    // (non-public) generated Program class - invoking a method looked up
+    // on a non-public class throws IllegalAccessException.
+    Object self = this;
+    if (self instanceof javax.baja.sys.BComponent)
+      myPathCache = ((javax.baja.sys.BComponent) self).getSlotPath().toString();
   }
   catch (Throwable ignore) {}
+  if (myPathCache == null)
+  {
+    try
+    {
+      java.lang.reflect.Method m = javax.baja.sys.BComponent.class.getMethod(
+        "getSlotPath", new Class[]{});
+      Object ord = m.invoke(this, new Object[]{});
+      if (ord != null) myPathCache = ord.toString();
+    }
+    catch (Throwable ignore) {}
+  }
+  myPathCache = stripOrdPrefix(myPathCache);
   return myPathCache;
+}
+
+// Reduce "station:|slot:/A/B" or "slot:/A/B" to "/A/B" so protected-path
+// comparisons don't depend on which form getSlotPath()/an ord produced.
+private String stripOrdPrefix(String p)
+{
+  if (p == null) return null;
+  p = p.trim();
+  int bar = p.indexOf('|');
+  if (bar >= 0) p = p.substring(bar + 1);
+  if (p.startsWith("slot:")) p = p.substring(5);
+  while (p.length() > 1 && p.endsWith("/")) p = p.substring(0, p.length() - 1);
+  return p;
 }
 
 // Non-null (with a reason) if targetPath must never be deleted:
@@ -2011,14 +2038,22 @@ private String resolveMyPath()
 // Services or to this program are off-limits.
 private String protectedReason(String targetPath)
 {
-  if (targetPath == null) return null;
+  targetPath = stripOrdPrefix(targetPath);
+  if (targetPath == null || targetPath.length() == 0) return null;
+
+  // Fail closed: if we can't tell where this program lives, refuse
+  // everything rather than risk deleting the folder it runs in.
+  String myPath = resolveMyPath();
+  if (myPath == null)
+    return "cannot determine this program's own location (refusing to delete anything)";
+
+  if (targetPath.equals("/"))
+    return "the station root";
 
   if (targetPath.equals("/Services") || targetPath.startsWith("/Services/"))
     return "inside the station Services tree";
 
-  String myPath = resolveMyPath();
-  if (myPath != null &&
-      (myPath.equals(targetPath) || myPath.startsWith(targetPath + "/")))
+  if (myPath.equals(targetPath) || myPath.startsWith(targetPath + "/"))
     return "this program, or a folder it lives inside " +
       "(deleting it would remove the running program)";
 
