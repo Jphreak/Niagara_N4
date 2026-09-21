@@ -1984,28 +1984,70 @@ private String resolveMyPath()
 {
   if (myPathResolved) return myPathCache;
   myPathResolved = true;
+  Object self = this;
+
+  // 1) 'this' is itself a BComponent (some builds).
   try
   {
-    // Resolve the method on the PUBLIC BComponent class, not this
-    // (non-public) generated Program class - invoking a method looked up
-    // on a non-public class throws IllegalAccessException.
-    Object self = this;
     if (self instanceof javax.baja.sys.BComponent)
       myPathCache = ((javax.baja.sys.BComponent) self).getSlotPath().toString();
   }
   catch (Throwable ignore) {}
+
+  // 2) A Program's class extends com.tridium.program.ProgramBase, which
+  // holds the host BProgram component (getComponent()). Try that and a few
+  // similar accessors, looked up across the class hierarchy with
+  // setAccessible so a non-public generated class doesn't block invoke().
   if (myPathCache == null)
   {
+    String[] names = new String[]{
+      "getComponent", "getProgramComponent", "getProgramObject",
+      "getParentComponent", "getParent", "getSlotPath" };
+    for (int n = 0; n < names.length && myPathCache == null; n++)
+    {
+      for (Class c = this.getClass(); c != null && myPathCache == null;
+           c = c.getSuperclass())
+      {
+        try
+        {
+          java.lang.reflect.Method m = c.getDeclaredMethod(names[n], new Class[]{});
+          m.setAccessible(true);
+          Object r = m.invoke(this, new Object[]{});
+          if (r instanceof javax.baja.sys.BComponent)
+            myPathCache = ((javax.baja.sys.BComponent) r).getSlotPath().toString();
+          else if (r != null && names[n].equals("getSlotPath"))
+            myPathCache = r.toString();
+        }
+        catch (Throwable ignore) {}
+      }
+    }
+  }
+
+  myPathCache = stripOrdPrefix(myPathCache);
+
+  if (myPathCache == null)
+  {
+    // Diagnostics so the right accessor can be picked next time.
     try
     {
-      java.lang.reflect.Method m = javax.baja.sys.BComponent.class.getMethod(
-        "getSlotPath", new Class[]{});
-      Object ord = m.invoke(this, new Object[]{});
-      if (ord != null) myPathCache = ord.toString();
+      StringBuilder sb = new StringBuilder("SELF-PATH DIAG: ");
+      for (Class c = this.getClass(); c != null; c = c.getSuperclass())
+      {
+        sb.append(c.getName()).append(" {");
+        java.lang.reflect.Method[] ms = c.getDeclaredMethods();
+        for (int i = 0; i < ms.length; i++)
+        {
+          String mn = ms[i].getName();
+          if (mn.indexOf("omponent") >= 0 || mn.indexOf("Path") >= 0 ||
+              mn.indexOf("arent") >= 0 || mn.indexOf("Ord") >= 0)
+            sb.append(mn).append(' ');
+        }
+        sb.append("} ");
+      }
+      writeToLog(sb.toString());
     }
     catch (Throwable ignore) {}
   }
-  myPathCache = stripOrdPrefix(myPathCache);
   return myPathCache;
 }
 
