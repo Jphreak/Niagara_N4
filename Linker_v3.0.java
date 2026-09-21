@@ -7,68 +7,24 @@ Date:    2026-09-18
 
 Changes
 -------
-  pre-   Original LinkCreator, v1.0 through v2.06. Create/delete/verify
-  v3.0   Niagara component links between source and target components
-         (Direct / BQL / CSV modes), 5-column CSV format (BOrd1, Slot1,
-         Direction, BOrd2, Slot2). Grew across seven releases: results
-         CSV archived with a timestamp every run alongside the log
-         (v1.01), createSampleCsv changed from a property toggle to an
-         Action (v1.02), maxArchives + auto-pruning / Cancel action /
-         pruneArchives action / UTF-8 + quote-aware CSV parsing (v2.00),
-         and CSV error reporting matured over v2.02-v2.05 so every
-         problem row (validation and processing) gets its own
-         results-CSV row, each BOrd is resolved (and reported)
-         separately with a reason that's never blank
-         (describeException()), double-counted error rows were fixed,
-         and the slot is shown next to the ord (ordWithSlot()). Version
-         numbering continues here rather than restarting, since this is
-         the line ForceRemove / Component Copier v3.0 aligned to; the
-         earlier releases are collapsed into this "pre-v3.0" line.
-  v3.0   Multiple sources: sourceOrd/sourceSlot merged into one
-         multi-line linkSource slot ("ord,slot" per line); every source
-         now links to the target in Direct/BQL mode. Notable points:
-           - BQL target lists are materialized into memory before
-             linking starts (a BQL cursor can only be walked once).
-           - buildLinkName() aligned with Component Copier's formula so
-             a link created by either program's link phase gets the
-             identical name for the same source/target/slot inputs
-             (previously the two programs generated different names
-             for the same link, so neither could recognize a link the
-             other had created).
-           - MIGRATION NOTE: any link created by this program before
-             this fix carries the OLD name and will not be recognized
-             as already existing under the new naming; either rename
-             the existing target slots to match, or let a re-run
-             create the correctly-named link alongside the old one and
-             remove the old one by hand once confirmed.
-           - Changes section condensed to the pre-/v3.0 format used by
-             ForceRemove / Component Copier.
-           - Verify fixed: onVerify() used to run its own separate
-             verifyLinks() implementation that re-walked Direct/BQL/CSV
-             from scratch and only ever logged FOUND/MISSING - it never
-             wrote a single row to resultsCsvPath, even though
-             initResultsCsv() ran first and every other action's rows go
-             there. verifyLinks() is gone; verify now runs through the
-             SAME runJob() -> executeDirect/BQL/CSV -> processLink() path
-             as execute/dryRun/reverse (isVerify() branch, mirroring
-             ComponentCopier's isVerify()/processLinkRow()), so it writes
-             a FOUND/MISSING row per link like every other outcome and
-             can't drift out of sync with a real run again.
-           - Cosmetic uniformity pass across all three programs:
-             getTargetModeOrdinal()/safePath() renamed to
-             getModeOrdinal()/safeName() in ForceRemove to match this
-             program and Component Copier, and ForceRemove's
-             resolveToFile/appendLine/clearFile/archiveFile/pruneArchives
-             picked up the explanatory comments this program and
-             Component Copier already carried on the otherwise-identical
-             code.
-           - Default source slot: a linkSource line with no ",slot"
-             (or a comma with nothing after it), and a blank Slot1/
-             Slot2 column in CSV mode, used to be a hard error - the
-             row was logged and skipped, since a link needs a slot to
-             attach to. Both now default to DEFAULT_SOURCE_SLOT ("out",
-             the conventional primary output on most control points)
-             instead of failing. A missing ORD is still an error.
+  pre-   Original LinkCreator, v1.0 through v2.06: create/delete/verify
+  v3.0   links in Direct / BQL / CSV modes with a 5-column CSV, archived
+         log and results CSV, cancel/pruneArchives/createSampleCsv actions,
+         and a results-CSV row with a reason for every problem row. Version
+         numbering continues here to align with ForceRemove / Component
+         Copier.
+  v3.0   - Multiple sources: sourceOrd/sourceSlot merged into one
+           multi-line linkSource slot ("ord,slot" per line); every source
+           links to the target in Direct/BQL mode.
+         - A source with no slot (bare ord, or blank Slot1/Slot2 in CSV)
+           defaults to "out" instead of failing. A missing ORD is still
+           an error.
+         - buildLinkName() now matches Component Copier's formula, so
+           either program recognizes links the other created.
+           Migration: links created before this change carry the old
+           name. Rename them, or re-run and delete the old ones by hand.
+         - verify now runs through the same path as execute/dryRun and
+           writes a FOUND/MISSING row per link to the results CSV.
 
 Purpose
 -------
