@@ -5,84 +5,28 @@ Author:  F. Lacroix
 Version: v3.0
 Date:    2026-09-18
 
-IMPORTS TAB - required rows:
-  Predefined : java.util, javax.baja.nre.util, javax.baja.sys,
-               javax.baja.status, javax.baja.util, com.tridium.program
-  User Def.  : control-rt | javax.baja.control
-               file       | javax.baja.file
-               baja       | javax.baja.space   <-- for Mark (backup copy)
-  By Prop.   : baja       | javax.baja.naming
-
 Changes
 -------
-  pre-   Original ForceRemovePoints. Direct tree-walk only (targetOrd +
-  v3.0   recurse), deletes matching ControlPoints or any matching
-         non-folder component, removes links first, optional bottom-up
-         empty-folder cleanup, dry-run via an executeDelete toggle,
-         quickGuide slot. Version numbering restarts here to align with
-         the LinkCreator / Component Copier v3.0 line; the earlier
-         standalone releases are collapsed into this "pre-v3.0" line.
+  pre-   Original ForceRemovePoints: direct tree-walk delete of matching
+  v3.0   points/components. Version numbering restarts at v3.0 to align
+         with LinkCreator / Component Copier.
   v3.0   Rewritten to match LinkCreator / Component Copier v3.0:
-         status/logFilePath/resultsCsvPath slots, auto-archiving of the
-         log and results CSV with maxArchives pruning, describeException()
-         for never-blank error reasons, dryRun/cancel/pruneArchives/
-         createSampleCsv/reverse as Actions instead of a boolean toggle,
-         quickGuide + version slots. Notable points:
-           - operationMode offers Direct, BQL and CSV. The removal target
-             list comes from a recursive walk under targetOrd, a BQL
-             query, or a one-column CSV of ords.
-           - removeChild(): all deletes go through one helper that removes
-             a child by its Property-in-parent (owner derived from the
-             child's slot path), not a getProperty(name) lookup, which
-             returned null for alarm/history extensions ("No property on
-             parent"). This is what makes stripping an alarm/history ext
-             off a point work.
-           - reverse: every execute COPIES each component (newCopy(), a
-             full deep copy) into a holding Folder created under this
-             program object BEFORE deleting, and records a manifest row +
-             its inbound/outbound links (LinkCreator 5-column CSV shape).
-             The reverse action copies them back to their original owners
-             and replays the links. If the backup copy fails, the delete
-             is SKIPPED so nothing is lost without a backup. The holding
-             folder is wiped each execute, so reverse restores the MOST
-             RECENT run only. LIMIT: archived history records for a
-             removed history extension are not restored (config only).
-           - Simplified: pointsOnly / recurse / removeFolders / removeLinks
-             slots and the ExtensionOnly removal mode were removed.
-             recurse, removeFolders and removeLinks are now always on;
-             every matched target is removed as a component. To strip an
-             extension off a point, target the extension directly (BQL
-             "select * from alarm:AlarmSourceExt", or a CSV/Direct target
-             on the ext) - the point stays, only the ext goes.
-           - Backup now uses Mark.copyTo (the same intact-copy path
-             ComponentCopier uses) instead of newCopy(): a point copies
-             WITH its alarm/history extensions, a folder copies WITH its
-             whole subtree. Each backup lands in its own numbered
-             subfolder ForceRemoveBackup/bk_<seq>/ so same-named items
-             never collide. Folders are now backed up too (the folder-
-             delete path was previously deleting without a backup).
-             Requires the javax.baja.space import row for Mark (see
-             IMPORTS TAB above).
-           - Extension backup fix: an ext (alarm:AlarmSourceExt etc.)
-             cannot be parented by a plain folder - Mark.copyTo threw
-             IllegalParentException. When the target is an ext (its parent
-             is a BControlPoint) the backup instead copies the ext's
-             PARENT POINT into the holding subfolder, and the manifest
-             Note column records "EXT:<extName>". On reverse, only that
-             ext is copied back onto the live point (the point itself was
-             never deleted). This is what makes deleting an alarm/history
-             ext off a point reversible.
-           - Protected targets: handleOneTarget() now hard-refuses two
-             kinds of target before anything else runs, in every mode and
-             even in dryRun - (1) anything under the station's Services
-             tree, and (2) this program itself or any folder it lives
-             inside. (2) exists because a folder delete removes its WHOLE
-             subtree: pointing a broad target (or an ancestor folder) at
-             this program's own container used to let a run delete the
-             folder the program is sitting in - and itself along with it
-             - mid-run. Both are logged as SKIPPED with a "PROTECTED"
-             reason; nothing else about the target's siblings or the rest
-             of the walk is affected.
+           - Direct, BQL and CSV target modes.
+           - Actions: execute, dryRun, cancel, reverse, pruneArchives,
+             createSampleCsv.
+           - Log and results CSV are auto-archived and pruned (maxArchives).
+           - Every removal is backed up first (Mark.copyTo, into
+             ForceRemoveBackup); if the backup fails the delete is skipped.
+             reverse restores the most recent run.
+           - Alarm/history extensions can be removed by targeting the
+             extension itself; the point stays.
+           - Protected targets are never deleted, in any mode or dryRun:
+             /Services, /Drivers (the container only), this program and its
+             backup folder, the folder it lives in and everything inside it,
+             and the station root. If the program can't locate itself,
+             nothing is deleted.
+           - BQL/CSV delete shallowest-first; Direct with no filters
+             deletes the target folder first.
 
 Purpose
 -------
@@ -234,10 +178,15 @@ private static final String QUICK_GUIDE =
   "    is deleted first and the now-gone inner items are skipped\n" +
   "    quietly.\n" +
   "  - Protected targets: the station's Services tree, this program\n" +
-  "    itself, and any folder this program lives inside are never\n" +
-  "    deleted, no matter what target/query matches them - logged as\n" +
-  "    SKIPPED (PROTECTED). Prevents a broad target from deleting the\n" +
-  "    folder this program is running in out from under itself.\n" +
+  "    itself (and its backup folder), any folder this program lives\n" +
+  "    inside, and EVERYTHING inside that folder (sibling programs) are\n" +
+  "    never deleted, no matter what target/query matches them - logged\n" +
+  "    as SKIPPED (PROTECTED). The top-level /Drivers container is also\n" +
+  "    protected (its contents are not). If the program's own location\n" +
+  "    can't be determined, nothing is deleted.\n" +
+  "  - Order: BQL/CSV delete shallowest-first (a folder before its\n" +
+  "    contents). Direct with no filters deletes the target folder first\n" +
+  "    as one unit; with a name/type filter it walks children first.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives are\n" +
   "    kept (default 10). 0 = keep all.";
 
@@ -829,6 +778,7 @@ private String normalizeOrd(String ordStr)
 {
   if (ordStr == null) return ordStr;
   ordStr = ordStr.trim();
+  if (ordStr.equals("/") || ordStr.equals("slot:/")) return "station:|slot:/";
   if (ordStr.startsWith("slot:/") && !ordStr.startsWith("station:|"))
     return "station:|" + ordStr;
   return ordStr;
@@ -1312,7 +1262,8 @@ private boolean backupComponent(
     if (!removedPath.equals("?"))
     {
       int slash = removedPath.lastIndexOf('/');
-      if (slash > 0) ownerPath = removedPath.substring(0, slash);
+      if (slash == 0) ownerPath = "/";   // top-level: owner is the root
+      else if (slash > 0) ownerPath = removedPath.substring(0, slash);
     }
     // Fallback to the owner instance only if the derivation failed.
     if (ownerPath.equals("?"))
@@ -1831,9 +1782,9 @@ private String removeChild(
       {
         String cp = child.getSlotPath().toString();      // .../airRqsts/ThisExt
         int slash = cp.lastIndexOf('/');
-        if (slash > 0)
+        if (slash >= 0)   // slash==0: top-level child, owner is the root
         {
-          String ownerPath = cp.substring(0, slash);     // .../airRqsts
+          String ownerPath = (slash == 0) ? "/" : cp.substring(0, slash);
           Object ro = javax.baja.naming.BOrd.make(
             normalizeOrd(ownerPath)).resolve().get();
           if (ro instanceof javax.baja.sys.BComponent)
@@ -1998,11 +1949,38 @@ private String resolveMyPath()
   // holds the host BProgram component (getComponent()). Try that and a few
   // similar accessors, looked up across the class hierarchy with
   // setAccessible so a non-public generated class doesn't block invoke().
+  // Direct call: this class extends ProgramBase, so getComponent() is
+  // callable without reflection. (The station's security manager denies
+  // setAccessible - ReflectPermission suppressAccessChecks - so the
+  // reflective route below cannot work for a non-public method.)
+  StringBuilder direct = new StringBuilder();
+  if (myPathCache == null)
+  {
+    try
+    {
+      Object host = getComponent();
+      if (host == null) direct.append("getComponent()=null; ");
+      else
+      {
+        direct.append("getComponent()->").append(host.getClass().getName()).append("; ");
+        if (host instanceof javax.baja.sys.BComponent)
+          myPathCache = ((javax.baja.sys.BComponent) host).getSlotPath().toString();
+        else
+          myPathCache = pathOfObject(host, direct);
+      }
+    }
+    catch (Throwable t)
+    {
+      direct.append("direct getComponent threw ").append(describeException(t)).append("; ");
+    }
+  }
+
   if (myPathCache == null)
   {
     String[] names = new String[]{
       "getComponent", "getProgramComponent", "getProgramObject",
       "getParentComponent", "getParent", "getSlotPath" };
+    StringBuilder why = new StringBuilder();
     for (int n = 0; n < names.length && myPathCache == null; n++)
     {
       for (Class c = this.getClass(); c != null && myPathCache == null;
@@ -2011,16 +1989,27 @@ private String resolveMyPath()
         try
         {
           java.lang.reflect.Method m = c.getDeclaredMethod(names[n], new Class[]{});
-          m.setAccessible(true);
           Object r = m.invoke(this, new Object[]{});
-          if (r instanceof javax.baja.sys.BComponent)
-            myPathCache = ((javax.baja.sys.BComponent) r).getSlotPath().toString();
-          else if (r != null && names[n].equals("getSlotPath"))
+          if (r == null)
+          {
+            why.append(names[n]).append("()=null; ");
+            continue;
+          }
+          why.append(names[n]).append("()->").append(r.getClass().getName()).append("; ");
+          if (names[n].equals("getSlotPath"))
             myPathCache = r.toString();
+          else
+            myPathCache = pathOfObject(r, why);
         }
-        catch (Throwable ignore) {}
+        catch (Throwable t)
+        {
+          if (!(t instanceof NoSuchMethodException))
+            why.append(names[n]).append(" threw ")
+              .append(describeException(t)).append("; ");
+        }
       }
     }
+    myPathWhy = direct.toString() + why.toString();
   }
 
   myPathCache = stripOrdPrefix(myPathCache);
@@ -2044,11 +2033,41 @@ private String resolveMyPath()
         }
         sb.append("} ");
       }
+      sb.append(" TRIED: ").append(myPathWhy);
       writeToLog(sb.toString());
     }
     catch (Throwable ignore) {}
   }
   return myPathCache;
+}
+
+private String myPathWhy = "";
+
+// Get a slot-path string off an arbitrary component-ish object using
+// public accessors, via reflection so a classloader mismatch on the
+// BComponent type can't defeat an instanceof/cast. Records failures in why.
+private String pathOfObject(Object r, StringBuilder why)
+{
+  String[] accessors = new String[]{
+    "getSlotPath", "getNavOrd", "getAbsoluteOrd", "getOrdInSession" };
+  for (int i = 0; i < accessors.length; i++)
+  {
+    try
+    {
+      java.lang.reflect.Method m = r.getClass().getMethod(accessors[i], new Class[]{});
+      Object v = m.invoke(r, new Object[]{});
+      if (v == null) { why.append(accessors[i]).append("=null; "); continue; }
+      String s = v.toString();
+      why.append(accessors[i]).append("='").append(s).append("'; ");
+      if (s.length() > 0 && s.indexOf("/") >= 0) return s;
+    }
+    catch (Throwable t)
+    {
+      why.append(accessors[i]).append(" threw ")
+        .append(describeException(t)).append("; ");
+    }
+  }
+  return null;
 }
 
 // Reduce "station:|slot:/A/B" or "slot:/A/B" to "/A/B" so protected-path
@@ -2075,9 +2094,11 @@ private String stripOrdPrefix(String p)
 //     deletes the job that's still in the middle of running (this is
 //     what "the program deleted itself mid-run" looks like from the
 //     target's side).
-// Deliberately does NOT protect siblings or unrelated descendants of
-// those folders - only the exact folder objects on the path down to
-// Services or to this program are off-limits.
+//   - anything inside this program (its reverse-backup folder), and
+//     everything inside the folder this program lives in (sibling
+//     programs and their contents). A real run deleted LinkerV3,
+//     ComponentCopierV3 and ForceRemoveBackup because only the exact
+//     ancestors were protected.
 private String protectedReason(String targetPath)
 {
   targetPath = stripOrdPrefix(targetPath);
@@ -2095,9 +2116,29 @@ private String protectedReason(String targetPath)
   if (targetPath.equals("/Services") || targetPath.startsWith("/Services/"))
     return "inside the station Services tree";
 
+  // The Drivers container itself - top level ONLY. Its contents
+  // (/Drivers/NiagaraNetwork, /Drivers/TEST_Setup, ...) stay deletable.
+  if (targetPath.equals("/Drivers"))
+    return "the Drivers container (top level only - its contents can be removed)";
+
   if (myPath.equals(targetPath) || myPath.startsWith(targetPath + "/"))
     return "this program, or a folder it lives inside " +
       "(deleting it would remove the running program)";
+
+  // Anything INSIDE this program (its ForceRemoveBackup folder and the
+  // reverse backups in it) - deleting those destroys the undo data.
+  if (targetPath.startsWith(myPath + "/"))
+    return "inside this program (its reverse-backup data)";
+
+  // Everything inside the folder this program lives in: its sibling
+  // programs (LinkerV3, ComponentCopierV3, ...) and anything under them.
+  int slash = myPath.lastIndexOf('/');
+  if (slash > 0)
+  {
+    String myFolder = myPath.substring(0, slash);
+    if (targetPath.startsWith(myFolder + "/"))
+      return "inside the folder this program lives in (" + myFolder + ")";
+  }
 
   return null;
 }
@@ -2528,6 +2569,31 @@ private void executeDirect(long runStart) throws Exception
 
     javax.baja.sys.BComponent root = (javax.baja.sys.BComponent) resolved;
     writeToLog("Direct target root: " + root.getSlotPath());
+
+    // Top-down: with no name/type filter, deleting the target folder
+    // removes its whole subtree in one backed-up unit, so handle the root
+    // FIRST rather than deleting every descendant and then the root. With
+    // a filter active the walk decides which descendants match, so keep
+    // the walk-then-root order. A protected root (e.g. an ancestor of this
+    // program) can't be deleted whole, so it falls through to the walk,
+    // where each child is checked individually.
+    if (filterEmpty(getNameFilter()) && filterEmpty(getTypeFilter()) &&
+        protectedReason(safeName(root)) == null &&
+        root.getParentComponent() != null)
+    {
+      try
+      {
+        handleOneTarget(root, "Direct", counts);
+        if (isDryRun() || !stillMounted(root))
+          continue;   // whole subtree handled (or previewed) in one unit
+      }
+      catch (Exception e)
+      {
+        counts[3]++;
+        writeToLog("ERROR deleting target itself: " + describeException(e));
+      }
+    }
+
     processChildrenDirect(root, counts);
 
     // Then delete the target itself: a single point is removed; a folder

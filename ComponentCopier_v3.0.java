@@ -7,64 +7,24 @@ Date:    2026-09-18
 
 Changes
 -------
-  pre-   Original Component Copier, v1.0 through v2.09. Multi-
-  v3.0   destination component copy (Direct / BQL / CSV modes).
-         Inspired by Giantsbane's "Photocopier" (https://ddc-talk.com/)
-         - this program expands that original concept with multi-mode
-         destinations, dry-run support, sample-CSV generation, and an
-         integrated link-creation phase. Grew across ten releases:
-         results CSV archived with a timestamp every run alongside the
-         log (v1.01), Verify action added (v1.02), createSampleCsv
-         changed from a property toggle to an Action (v1.03), links-only
-         mode added (v1.04), maxArchives + auto-pruning / Cancel action /
-         pruneArchives action / UTF-8 + quote-aware CSV parsing (v2.00),
-         reverse-mode link/delete ordering fixed and the link phase
-         gained live row progress (v2.01), link phase CSV error
-         reporting matured over v2.02-v2.05 so every problem row gets
-         its own results-CSV row with a never-blank reason
-         (describeException()) and the slot shown next to the ord
-         (ordWithSlot()), the link phase given its own linkerLogPath /
-         linkerResultsCsvPath (v2.06), multiple sources added with a
-         recursion guard against a destination nested inside its own
-         source (v2.07), componentToCopy and additionalSources merged
-         into one multi-line componentSource slot (v2.08), and a
-         cosmetic rename to "Component Copier" (v2.09). The earlier
-         releases are collapsed into this "pre-v3.0" line.
-  v3.0   Synced to LinkCreator's multi-source model; LinkCreator's
-         buildLinkName() aligned with this program's so a link created
-         by either program's link phase gets the identical name for the
-         same source/target/slot inputs. Notable points:
-           - Folder-source copy fixed: a folder source used to be
-             exploded into its direct children, each copied in its own
-             separate Mark.copyTo() call, so the destination mirrored
-             the source's contents with no wrapper folder. That broke
-             keepAllLinks - Niagara's link-remap only sees the subtree
-             inside ONE copyTo() call, so a link from one child to a
-             sibling child kept pointing at the ORIGINAL source
-             component after copy instead of its new copy (links
-             weren't relative to the copy). Every source (folder,
-             point, extension, anything) is now copied WHOLE as a
-             single unit in one copyTo() call by default, regardless
-             of type, so its full subtree - and every internal link in
-             it - moves and remaps together. A folder source lands at
-             the destination as itself (dst/<folderName>/...) rather
-             than flattened into its children.
-           - FLATTEN mode: a trailing "*" on a componentSource line
-             (".../TESTING_1/*") requests the pre-v3.0 behaviour for
-             that one source - the folder's direct children are copied
-             individually into the destination with no wrapper folder
-             (dst/<subfolder>/point, dst/point). Since Niagara can't
-             remap links across separate copyTo() calls,
-             processInternalLinks() captures every link internal to
-             the folder's subtree BEFORE/AFTER the child copies (walks
-             getLinks() on every descendant) and recreates each one at
-             the destination through the SAME processLinkRow() the
-             linksCsvPath phase uses, so it is fully
-             verify/dryRun/reverse-aware and logs to the normal linker
-             log/results CSV. Reverse ordering matches the linksCsvPath
-             phase: links removed first, then the flattened components.
-           - Changes section condensed to the pre-/v3.0 format used by
-             ForceRemove / LinkCreator.
+  pre-   Original Component Copier, v1.0 through v2.09: multi-destination
+  v3.0   copy in Direct / BQL / CSV modes, verify, links-only mode, an
+         integrated link phase with its own log and results CSV, multiple
+         sources, archived logs, and cancel/pruneArchives/createSampleCsv
+         actions. Version numbering restarts here to align with
+         LinkCreator / ForceRemove.
+  v3.0   - Uses LinkCreator's multi-source model; LinkCreator's
+           buildLinkName() now matches this program's, so either program
+           recognizes links the other created.
+         - Folder sources are copied whole in one copyTo() call by
+           default, landing as dst/<folderName>/... Copying children
+           separately broke keepAllLinks: links between sibling children
+           kept pointing at the original components.
+         - FLATTEN mode: a trailing "*" on a componentSource line
+           (".../TESTING_1/*") copies the folder's children individually
+           with no wrapper folder. Links internal to the folder are
+           recreated at the destination afterward through the normal
+           link phase (verify/dryRun/reverse-aware).
 
 Inspiration
 -----------
