@@ -2,8 +2,8 @@
 ================================================================================
 Program: LinkCreator (Direct / BQL / CSV) - Niagara AX 3.5 - 3.8
 Author:  F. Lacroix
-Version: v3.0-AX
-Date:    2026-09-24
+Version: v3.1-AX
+Date:    2026-10-01
 
 AX port notes (v3.0-AX)
 -----------------------
@@ -13,6 +13,15 @@ AX port notes (v3.0-AX)
 
 Changes
 -------
+  v3.1-AX  Slot names in ords are escaped automatically. A CSV row or
+           linkSource line can now use the names exactly as Workbench
+           displays them ("slot:/Drivers/BacnetNetwork/VAV B-31/...")
+           instead of the escaped form ("VAV$20B$2d31"). Already-escaped
+           names ($20, $2d, $uXXXX) pass through unchanged, so existing
+           CSVs keep working. Only the slot: part of an ord is touched
+           (bql:, file:, h: are left alone). Applies to linkSource, both
+           CSV ord columns, and targetOrd in Direct mode. A CSV row that
+           still fails to resolve shows the escaped ord it tried.
   pre-   Original LinkCreator, v1.0 through v2.06: create/delete/verify
   v3.0   links in Direct / BQL / CSV modes with a 5-column CSV, archived
          log and results CSV, cancel/pruneArchives/createSampleCsv actions,
@@ -107,7 +116,7 @@ Quick start
 private static final javax.baja.log.Log log =
   javax.baja.log.Log.getLog("LinkCreator");
 
-private static final String VERSION = "v3.0-AX";
+private static final String VERSION = "v3.1-AX";
 
 // Slot a source defaults to when none is given (a bare ord with no
 // ",slot" in linkSource, or a blank Slot1/Slot2 CSV column) - "out" is
@@ -117,7 +126,7 @@ private static final String DEFAULT_SOURCE_SLOT = "out";
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "LinkCreator " + "v3.0-AX\n" +
+  "LinkCreator " + "v3.1-AX\n" +
   "=====================================\n" +
   "\n" +
   "Modes (operationMode):\n" +
@@ -166,6 +175,10 @@ private static final String QUICK_GUIDE =
   "    linked to the target in Direct/BQL mode. No \",slot\" (or a\n" +
   "    blank one) defaults to \"out\" - same for a blank Slot1/Slot2\n" +
   "    column in CSV mode.\n" +
+  "  - Ords can use slot names as Workbench shows them, e.g.\n" +
+  "    slot:/Drivers/BacnetNetwork/VAV B-31/IconFolder - spaces,\n" +
+  "    dashes etc. are escaped automatically ($20, $2d). Already-\n" +
+  "    escaped names are left as they are.\n" +
   "  - set deleteLinks=true to remove links instead of\n" +
   "    creating them. Dry Run previews delete-mode as well.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives\n" +
@@ -1032,10 +1045,141 @@ private String csvEscape(String s)
 private String normalizeOrd(String ordStr)
 {
   if (ordStr == null) return ordStr;
-  ordStr = ordStr.trim();
+  ordStr = escapeSlotNames(ordStr.trim());
   if (ordStr.startsWith("slot:/") && !ordStr.startsWith("station:|"))
     return "station:|" + ordStr;
   return ordStr;
+}
+
+// ----------------------------------------------------
+// Slot-name escaping (v3.1-AX)
+// ----------------------------------------------------
+// Niagara slot names allow only ASCII letters, digits and '_' (and must
+// start with a letter). Anything else is stored escaped as $xx (two hex
+// digits) or $uxxxx: "VAV B-31" is really "VAV$20B$2d31". These helpers
+// escape the slot: part of an ord so names can be typed as Workbench
+// displays them. Already-escaped sequences are copied through as-is, so
+// escaped, unescaped and mixed input all end up the same.
+
+// Escape every slot name in the slot: part(s) of an ord. Other ord
+// parts (station:, bql:, file:, h:, ...) are returned unchanged.
+private String escapeSlotNames(String ord)
+{
+  if (ord == null || ord.indexOf("slot:") < 0) return ord;
+  StringBuffer out = new StringBuffer();
+  int start = 0;
+  int n = ord.length();
+  for (int i = 0; i <= n; i++)
+  {
+    if (i == n || ord.charAt(i) == '|')
+    {
+      String part = ord.substring(start, i);
+      if (part.startsWith("slot:"))
+        out.append("slot:").append(escapeSlotPath(part.substring(5)));
+      else
+        out.append(part);
+      if (i < n) out.append('|');
+      start = i + 1;
+    }
+  }
+  return out.toString();
+}
+
+// Escape each '/'-separated name in a slot path, keeping the slashes.
+private String escapeSlotPath(String path)
+{
+  StringBuffer out = new StringBuffer();
+  int start = 0;
+  int n = path.length();
+  for (int i = 0; i <= n; i++)
+  {
+    if (i == n || path.charAt(i) == '/')
+    {
+      out.append(escapeSlotName(path.substring(start, i)));
+      if (i < n) out.append('/');
+      start = i + 1;
+    }
+  }
+  return out.toString();
+}
+
+// Escape one slot name. Letters always pass; digits and '_' pass except
+// as the first character; a valid existing escape ($xx / $uxxxx) is
+// copied through; everything else becomes $xx (or $uxxxx above 0xff).
+private String escapeSlotName(String name)
+{
+  if (name.length() == 0) return name;
+  StringBuffer sb = new StringBuffer();
+  int n = name.length();
+  int i = 0;
+  while (i < n)
+  {
+    char c = name.charAt(i);
+    boolean first = (i == 0);
+
+    if (c == '$')
+    {
+      int len = escapeLengthAt(name, i);
+      if (len > 0)
+      {
+        sb.append(name.substring(i, i + len));
+        i += len;
+        continue;
+      }
+    }
+
+    boolean letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    boolean digit  = (c >= '0' && c <= '9');
+    if (letter || (!first && (digit || c == '_')))
+      sb.append(c);
+    else if (c <= 0xff)
+      sb.append('$').append(hex(c, 2));
+    else
+      sb.append("$u").append(hex(c, 4));
+    i++;
+  }
+  return sb.toString();
+}
+
+// Length of a valid escape starting at name[i] ('$'): 6 for $uxxxx,
+// 3 for $xx, 0 if what follows isn't a valid escape.
+private int escapeLengthAt(String name, int i)
+{
+  int n = name.length();
+  if (i + 5 < n && name.charAt(i + 1) == 'u' &&
+      isHex(name.charAt(i + 2)) && isHex(name.charAt(i + 3)) &&
+      isHex(name.charAt(i + 4)) && isHex(name.charAt(i + 5)))
+    return 6;
+  if (i + 2 < n && isHex(name.charAt(i + 1)) && isHex(name.charAt(i + 2)))
+    return 3;
+  return 0;
+}
+
+private boolean isHex(char c)
+{
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+         (c >= 'A' && c <= 'F');
+}
+
+// Lowercase hex of c, zero-padded to width digits.
+private String hex(char c, int width)
+{
+  String h = Integer.toHexString(c);
+  StringBuffer sb = new StringBuffer();
+  for (int i = h.length(); i < width; i++) sb.append('0');
+  return sb.append(h).toString();
+}
+
+// " (escaped: <ord>)" when escaping changed the ord, else "". Added to
+// CSV error reasons so a failing row shows exactly what was tried.
+private String escapedNote(String raw)
+{
+  if (raw == null) return "";
+  String esc = normalizeOrd(raw);
+  String plain = raw.trim();
+  if (plain.startsWith("slot:/") && !plain.startsWith("station:|"))
+    plain = "station:|" + plain;
+  return esc.equals(plain) ? "" : " (escaped: " + esc + ")";
 }
 
 private int getModeOrdinal()
@@ -1501,7 +1645,8 @@ private void executeDirect(long runStart) throws Exception
   }
 
   javax.baja.sys.BComponent tgtComp =
-    (javax.baja.sys.BComponent) resolveOrd(tgtOrd);
+    (javax.baja.sys.BComponent) resolveOrd(
+      javax.baja.naming.BOrd.make(normalizeOrd(tgtOrd.toString())));
 
   writeToLog("Sources: " + sources.size() +
     " | Target: " + tgtComp.getName());
@@ -1836,7 +1981,7 @@ private void executeCSV(long runStart) throws Exception
       {
         counts[2]++;
         String reason = "BOrd1 cannot resolve: " + bord1Str +
-          " -- " + describeException(e);
+          escapedNote(bord1Str) + " -- " + describeException(e);
         writeToLog("ERROR on row " + rowNum + ": " + reason);
         log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
         writeToResults(csvEscape(now()) + "," +
@@ -1873,7 +2018,7 @@ private void executeCSV(long runStart) throws Exception
       {
         counts[2]++;
         String reason = "BOrd2 cannot resolve: " + bord2Str +
-          " -- " + describeException(e);
+          escapedNote(bord2Str) + " -- " + describeException(e);
         writeToLog("ERROR on row " + rowNum + ": " + reason);
         log.warning("[LinkCreator] CSV row " + rowNum + " error: " + reason);
         writeToResults(csvEscape(now()) + "," +
@@ -2097,4 +2242,4 @@ public void onStop() throws Exception
 {
   log.message("[LinkCreator] Service stopped");
   writeToLog("Service stopped");
-}
+}
