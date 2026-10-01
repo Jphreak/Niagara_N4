@@ -1,9 +1,25 @@
 /*
 ================================================================================
-Program: Component Copier (Direct / BQL / CSV) - Niagara N4.15
+Program: Component Copier (Direct / BQL / CSV) - Niagara AX 3.5 - 3.8
 Author:  F. Lacroix
-Version: v3.0
-Date:    2026-09-18
+Version: v3.2-AX
+Date:    2026-10-01
+
+AX port notes (v3.0-AX)
+-----------------------
+  Port of the N4.15 Component Copier v3.0. Same slots, actions, CSV
+  formats, link-naming formula and log / results-CSV layout. Changed
+  only where AX requires it (same approach as Linker4AX):
+  - Java 1.4 language + API level; javax.baja.log.Log for logging.
+  - No inner / anonymous classes (InternalLink is a String[4]).
+  - Ords resolve against the station; BQL read via BICollection/Cursor.
+    Use "bql:select from <type> where ..." (no "*") in copyTo.
+  - Copies use javax.baja.space.Mark.copyTo, found by reflection. If
+    this AX build's Mark can't be used, copies fall back to
+    newCopy(true) + add(); the log's "Copy engine:" line says which
+    ran. With the fallback, links INSIDE a copied folder still point at
+    the original components (use FLATTEN "*" so they are recreated).
+  - DurationMs has 1 ms resolution; destinationMode read by ordinal.
 
 Changes
 -------
@@ -25,6 +41,22 @@ Changes
            with no wrapper folder. Links internal to the folder are
            recreated at the destination afterward through the normal
            link phase (verify/dryRun/reverse-aware).
+  v3.1-AX   Slot names in ords are escaped automatically, so names can be
+            typed as Workbench shows them ("VAV B-31" -> "VAV$20B$2d31").
+            Already-escaped names ($20, $2d, $uxxxx) pass through unchanged.
+            Only the slot: part of an ord is touched (bql:, file:, h: are
+            left alone). Applies to componentSource,
+            copyTo in Direct mode, the copy CSV and the links CSV.
+  v3.2-AX   Links are checked. Both slots must exist before a link is added
+            (dryRun reports a missing slot too), and every added link is
+            read back: if the framework dropped it, left it inactive or
+            fault-flagged it, it is removed and the row is ERROR instead of
+            LINKED. verify reports a link that exists but does not work as
+            BROKEN instead of FOUND.
+            FLATTEN mode: a copied child that arrives still linked to the
+            ORIGINAL sibling (kept by keepAllLinks) has that link removed
+            before the remapped link is added, so no input is fed twice.
+            verify reports such a link as STALE; dryRun previews it.
 
 Inspiration
 -----------
@@ -119,15 +151,18 @@ Quick start
 ================================================================================
 */
 
-private static final java.util.logging.Logger log =
-  java.util.logging.Logger.getLogger("ComponentCopier");
+private static final javax.baja.log.Log log =
+  javax.baja.log.Log.getLog("ComponentCopier");
 
-private static final String VERSION = "v3.0";
+// Tag used in Application Director lines.
+private static final String LOG_TAG = "ComponentCopier";
+
+private static final String VERSION = "v3.2-AX";
 
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "Component Copier " + "v3.0\n" +
+  "Component Copier " + "v3.2-AX\n" +
   "=====================================\n" +
   "\n" +
   "Modes (destinationMode):\n" +
@@ -215,6 +250,14 @@ private static final String QUICK_GUIDE =
   "    skipped and only the link CSV is processed (creates in\n" +
   "    normal mode, removes in reverse mode). Useful when\n" +
   "    wiring up (or unwiring) pre-existing components.\n" +
+  "  - Ords can use slot names as Workbench shows them, e.g.\n" +
+  "    slot:/Drivers/BacnetNetwork/VAV B-31/points - spaces,\n" +
+  "    dashes etc. are escaped automatically ($20, $2d).\n" +
+  "  - Every link is checked: both slots must exist before it is\n" +
+  "    added, and it is read back after. A link the framework drops\n" +
+  "    or can't activate (bad slot, unresolved source, licence\n" +
+  "    limit) is removed and reported as ERROR. verify reports a\n" +
+  "    link that exists but doesn't work as BROKEN.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives\n" +
   "    are kept (default 10). 0 = keep all.";
 
@@ -222,6 +265,306 @@ private String now()
 {
   return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
     .format(new java.util.Date());
+}
+
+// ----------------------------------------------------
+// Java 1.4 / AX helpers (v3.0-AX)
+// ----------------------------------------------------
+
+// Class name without the package (Class.getSimpleName() is Java 1.5+).
+private String simpleName(Object o)
+{
+  if (o == null) return "null";
+  String n = o.getClass().getName();
+  int dot = n.lastIndexOf('.');
+  if (dot >= 0) n = n.substring(dot + 1);
+  int dollar = n.lastIndexOf('$');
+  if (dollar >= 0 && dollar < n.length() - 1) n = n.substring(dollar + 1);
+  return n;
+}
+
+// Elapsed ms since t0 (a System.currentTimeMillis() stamp), formatted
+// like the N4 build's "%.3f" DurationMs column.
+private String fmtMs(long t0)
+{
+  long ms = System.currentTimeMillis() - t0;
+  if (ms < 0) ms = 0;
+  return String.valueOf(ms) + ".000";
+}
+
+// Split raw on any of the characters in seps, dropping empty pieces.
+// Replaces the N4 build's regex String.split() calls.
+private String[] splitOn(String raw, String seps)
+{
+  java.util.List out = new java.util.ArrayList();
+  if (raw == null) return new String[0];
+  int n = raw.length();
+  int start = 0;
+  for (int i = 0; i <= n; i++)
+  {
+    boolean brk = (i == n) || seps.indexOf(raw.charAt(i)) >= 0;
+    if (brk)
+    {
+      if (i > start) out.add(raw.substring(start, i));
+      start = i + 1;
+    }
+  }
+  String[] arr = new String[out.size()];
+  for (int i = 0; i < arr.length; i++) arr[i] = (String) out.get(i);
+  return arr;
+}
+
+// Double every '"' in s (String.replace(CharSequence, ...) is Java 1.5+).
+private String doubleQuotes(String s)
+{
+  StringBuffer sb = new StringBuffer();
+  for (int i = 0; i < s.length(); i++)
+  {
+    char c = s.charAt(i);
+    if (c == '"') sb.append('"');
+    sb.append(c);
+  }
+  return sb.toString();
+}
+
+// Resolve an ord against the local station (AX ords need a base).
+private javax.baja.sys.BObject resolveOrd(javax.baja.naming.BOrd ord)
+  throws Exception
+{
+  return ord.resolve(javax.baja.sys.Sys.getStation()).get();
+}
+
+// Resolve an ord against a given base object (e.g. a link's owner, so
+// a relative or handle ord in a BLink resolves in the right space).
+private javax.baja.sys.BObject resolveOrd(
+  javax.baja.naming.BOrd ord, javax.baja.sys.BObject base) throws Exception
+{
+  return ord.resolve(base).get();
+}
+
+// Close a BQL cursor if this AX build's Cursor has close(); older
+// builds don't, so it's called by reflection and failures are ignored.
+private void closeCursor(Object cursor)
+{
+  if (cursor == null) return;
+  try
+  {
+    java.lang.reflect.Method m =
+      cursor.getClass().getMethod("close", new Class[0]);
+    m.invoke(cursor, new Object[0]);
+  }
+  catch (Throwable ignore) {}
+}
+
+// Walk a BQL result into a list of components. AX: a
+// "bql:select from ..." ord resolves to a BICollection (a projection
+// gives a BITable, which is also a BICollection). A result that is a
+// single component is returned as a one-item list. Rows that are not
+// components are counted into errCount[0] and logged, not cast.
+// Returns null (after logging) if the result can't be walked at all.
+private java.util.List readBqlComponents(Object bqlResult, int[] errCount,
+  String what)
+{
+  java.util.List out = new java.util.ArrayList();
+  if (bqlResult instanceof javax.baja.sys.BComponent)
+  {
+    out.add(bqlResult);
+    writeToLog("BQL: ord resolved to a single component - using it as " +
+      "the only " + what);
+    return out;
+  }
+  if (!(bqlResult instanceof javax.baja.collection.BICollection))
+  {
+    String msg = "BQL ERROR: ord did not resolve to a query result or " +
+      "component (" + simpleName(bqlResult) + ")";
+    writeToLog(msg);
+    setStatus("[" + now() + "] " + msg);
+    log.warning("[" + LOG_TAG + "] " + msg);
+    return null;
+  }
+
+  javax.baja.sys.Cursor cursor = null;
+  try
+  {
+    cursor = ((javax.baja.collection.BICollection) bqlResult).cursor();
+    int rowNum = 0;
+    while (cursor.next())
+    {
+      rowNum++;
+      if (isCancelled())
+      {
+        writeToLog("BQL " + what + " read CANCELLED before row " + rowNum);
+        break;
+      }
+      try
+      {
+        Object row = cursor.get();
+        if (row instanceof javax.baja.sys.BComponent)
+          out.add(row);
+        else
+        {
+          errCount[0]++;
+          writeToLog("BQL ERROR row " + rowNum + ": not a component (" +
+            simpleName(row) + ") - use \"select from <type>\" with no " +
+            "column list so each row is the component itself");
+        }
+      }
+      catch (Exception e)
+      {
+        errCount[0]++;
+        writeToLog("BQL ERROR reading row " + rowNum + ": " +
+          describeException(e));
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog("BQL CURSOR ERROR: " + describeException(e));
+    setStatus("[" + now() + "] BQL CURSOR ERROR: " + describeException(e));
+    return null;
+  }
+  finally
+  {
+    closeCursor(cursor);
+  }
+  return out;
+}
+
+// Station home folder. Uses Sys.getStationHome() when this AX build
+// has it; otherwise builds <baja home>/stations/<station name>. Both
+// are called by reflection so the program compiles on every 3.5 - 3.8
+// build. Returns null if neither works; file writes then no-op.
+private java.io.File stationHome()
+{
+  try
+  {
+    java.lang.reflect.Method m = javax.baja.sys.Sys.class.getMethod(
+      "getStationHome", new Class[0]);
+    Object o = m.invoke(null, new Object[0]);
+    if (o instanceof java.io.File) return (java.io.File) o;
+  }
+  catch (Throwable ignore) {}
+
+  try
+  {
+    java.lang.reflect.Method mh = javax.baja.sys.Sys.class.getMethod(
+      "getBajaHome", new Class[0]);
+    Object home = mh.invoke(null, new Object[0]);
+    Object station = javax.baja.sys.Sys.getStation();
+    java.lang.reflect.Method mn = station.getClass().getMethod(
+      "getStationName", new Class[0]);
+    Object name = mn.invoke(station, new Object[0]);
+    if (home instanceof java.io.File && name != null)
+      return new java.io.File(
+        new java.io.File((java.io.File) home, "stations"), name.toString());
+  }
+  catch (Throwable ignore) {}
+
+  return null;
+}
+
+// ----------------------------------------------------
+// Component copy engine (v3.0-AX)
+// ----------------------------------------------------
+// The N4 build calls javax.baja.space.Mark.copyTo(dst, params, cx)
+// directly. AX builds differ in Mark's exact signatures, so Mark is
+// found and called by reflection here; the program compiles on every
+// AX build and uses Mark when it's there. Mark.copyTo is what keeps
+// links INSIDE a copied subtree pointing at the new copies.
+//
+// If Mark can't be found or called, falls back to newCopy(true) + add()
+// under the source's own name. That copy is complete (config, children,
+// extensions, link slots), but links inside the copied subtree still
+// point at the ORIGINAL components - the log says which engine ran.
+//
+// A real copy failure thrown BY Mark.copyTo (e.g. an illegal parent) is
+// passed straight up - it is not retried with the fallback.
+private String copyEngineUsed = null;
+
+private String copyComponent(
+  javax.baja.sys.BComponent src, javax.baja.sys.BComponent dst,
+  javax.baja.sys.BComponent params) throws Exception
+{
+  String markWhy = "";
+  try
+  {
+    Class mc = Class.forName("javax.baja.space.Mark");
+
+    Object mark = null;
+    java.lang.reflect.Constructor[] ctors = mc.getConstructors();
+    for (int i = 0; i < ctors.length && mark == null; i++)
+    {
+      Class[] pt = ctors[i].getParameterTypes();
+      if (pt.length == 1 && pt[0].isInstance(src))
+        mark = ctors[i].newInstance(new Object[]{ src });
+    }
+    if (mark == null) markWhy = "no Mark(<component>) constructor";
+
+    if (mark != null)
+    {
+      java.lang.reflect.Method[] ms = mc.getMethods();
+      java.lang.reflect.Method copy3 = null;
+      java.lang.reflect.Method copy2 = null;
+      for (int i = 0; i < ms.length; i++)
+      {
+        if (!ms[i].getName().equals("copyTo")) continue;
+        Class[] pt = ms[i].getParameterTypes();
+        if (pt.length == 3 && pt[0].isInstance(dst) &&
+            pt[1].isInstance(params) && !pt[2].isPrimitive())
+          copy3 = ms[i];
+        else if (pt.length == 2 && pt[0].isInstance(dst) &&
+            pt[1].isInstance(params))
+          copy2 = ms[i];
+      }
+
+      if (copy3 != null || copy2 != null)
+      {
+        try
+        {
+          if (copy3 != null)
+            copy3.invoke(mark, new Object[]{ dst, params, null });
+          else
+            copy2.invoke(mark, new Object[]{ dst, params });
+        }
+        catch (java.lang.reflect.InvocationTargetException ite)
+        {
+          Throwable c = ite.getTargetException();
+          if (c instanceof Exception) throw (Exception) c;
+          throw new Exception(describeException(c));
+        }
+        noteCopyEngine("Mark.copyTo");
+        return "Mark.copyTo";
+      }
+      markWhy = "no matching Mark.copyTo(...) method";
+    }
+  }
+  catch (ClassNotFoundException cnf) { markWhy = "javax.baja.space.Mark not found"; }
+  catch (NoClassDefFoundError ncd)   { markWhy = "javax.baja.space.Mark not loadable"; }
+  catch (InstantiationException ie)  { markWhy = "Mark constructor failed: " + describeException(ie); }
+  catch (IllegalAccessException iae) { markWhy = "Mark not accessible: " + describeException(iae); }
+  catch (java.lang.reflect.InvocationTargetException ite)
+  {
+    markWhy = "Mark constructor threw: " + describeException(ite.getTargetException());
+  }
+
+  // Fallback: plain deep copy + add under the source's own name.
+  java.lang.reflect.Method nc = src.getClass().getMethod(
+    "newCopy", new Class[]{ boolean.class });
+  Object copy = nc.invoke(src, new Object[]{ Boolean.TRUE });
+  if (!(copy instanceof javax.baja.sys.BValue))
+    throw new Exception("newCopy(true) did not return a BValue");
+  dst.add(src.getName(), (javax.baja.sys.BValue) copy);
+  noteCopyEngine("newCopy fallback (" + markWhy + ") - links inside a " +
+    "copied subtree still point at the originals");
+  return "newCopy";
+}
+
+private void noteCopyEngine(String engine)
+{
+  if (engine.equals(copyEngineUsed)) return;
+  copyEngineUsed = engine;
+  writeToLog("Copy engine: " + engine);
+  log.message("[" + LOG_TAG + "] Copy engine: " + engine);
 }
 
 // ----------------------------------------------------
@@ -237,8 +580,8 @@ private String describeException(Throwable t)
 {
   if (t == null) return "unknown error";
 
-  StringBuilder sb = new StringBuilder();
-  String cls = t.getClass().getSimpleName();
+  StringBuffer sb = new StringBuffer();
+  String cls = simpleName(t);
   String msg = t.getMessage();
 
   if (msg != null && msg.trim().length() > 0)
@@ -249,7 +592,7 @@ private String describeException(Throwable t)
   Throwable cause = t.getCause();
   if (cause != null && cause != t)
   {
-    sb.append(" [cause: ").append(cause.getClass().getSimpleName());
+    sb.append(" [cause: ").append(simpleName(cause));
     String cmsg = cause.getMessage();
     if (cmsg != null && cmsg.trim().length() > 0)
       sb.append(": ").append(cmsg.trim());
@@ -269,11 +612,10 @@ private String ordWithSlot(String ord, String slot)
   return o + " [" + slot.trim() + "]";
 }
 
-// Format an elapsed nanoTime delta as milliseconds with 3 decimals. (v2.06)
+// Elapsed milliseconds since t0, as the DurationMs column text. (v2.06)
 private String durMs(long t0)
 {
-  return String.format(java.util.Locale.ROOT, "%.3f",
-    (System.nanoTime() - t0) / 1000000.0);
+  return fmtMs(t0);
 }
 
 // ----------------------------------------------------
@@ -460,7 +802,7 @@ private java.util.List getSourceOrdStrings()
   String raw = resolveComponentSource();
   if (raw.length() > 0)
   {
-    String[] lines = raw.split("[\\r\\n,]+");
+    String[] lines = splitOn(raw, "\r\n,");
     for (int i = 0; i < lines.length; i++)
     {
       String s = lines[i].trim();
@@ -501,13 +843,13 @@ private javax.baja.sys.BComponent resolveSourceComponent(String ordStr)
 {
   try
   {
-    javax.baja.naming.BOrd ord = javax.baja.naming.BOrd.make(ordStr);
-    Object resolved = ord.resolve().get();
+    javax.baja.naming.BOrd ord = javax.baja.naming.BOrd.make(normalizeOrd(ordStr));
+    Object resolved = resolveOrd(ord);
     if (resolved instanceof javax.baja.sys.BComponent)
       return (javax.baja.sys.BComponent) resolved;
     String msg = "SOURCE ERROR: " + ordStr +
       " did not resolve to a component (" +
-      resolved.getClass().getName() + ")";
+      (resolved == null ? "null" : resolved.getClass().getName()) + ")";
     setStatus("[" + now() + "] " + msg);
     log.warning("[ComponentCopier] " + msg);
     writeToLog(msg);
@@ -628,15 +970,11 @@ private String strOf(Object o)
 
 // One internal link, captured as full slot paths + slot names under the
 // SOURCE folder (not yet remapped to the destination).
-private static class InternalLink
-{
-  String srcPath, srcSlot, tgtPath, tgtSlot;
-  InternalLink(String srcPath, String srcSlot, String tgtPath, String tgtSlot)
-  {
-    this.srcPath = srcPath; this.srcSlot = srcSlot;
-    this.tgtPath = tgtPath; this.tgtSlot = tgtSlot;
-  }
-}
+// AX: carried as a String[4] (no inner classes in a Program object).
+private static final int IL_SRC_PATH = 0;
+private static final int IL_SRC_SLOT = 1;
+private static final int IL_TGT_PATH = 2;
+private static final int IL_TGT_SLOT = 3;
 
 // Recursively collect every component in comp's subtree, comp included.
 private void collectSubtree(
@@ -689,8 +1027,7 @@ private java.util.List captureInternalLinks(javax.baja.sys.BComponent folder)
           Object srcOrdObj = invoke0(lk, "getSourceOrd");
           if (srcOrdObj instanceof javax.baja.naming.BOrd)
           {
-            Object so = ((javax.baja.naming.BOrd) srcOrdObj)
-              .resolve(tgtOwner, null).get();
+            Object so = resolveOrd((javax.baja.naming.BOrd) srcOrdObj, tgtOwner);
             if (so instanceof javax.baja.sys.BComponent)
               srcComp = (javax.baja.sys.BComponent) so;
           }
@@ -707,7 +1044,7 @@ private java.util.List captureInternalLinks(javax.baja.sys.BComponent folder)
         boolean tgtInside = tgtPath.equals(folderPath) || tgtPath.startsWith(folderPrefix);
         if (!srcInside || !tgtInside) continue;
 
-        out.add(new InternalLink(srcPath, sourceSlot, tgtPath, targetSlot));
+        out.add(new String[]{ srcPath, sourceSlot, tgtPath, targetSlot });
       }
       catch (Throwable t)
       {
@@ -728,6 +1065,84 @@ private java.util.List captureInternalLinks(javax.baja.sys.BComponent folder)
 // link via the same processLinkRow() the linksCsvPath phase uses. An
 // endpoint that fails to resolve at the destination (e.g. a SKIPPED
 // copy) is logged and that one link is skipped; the rest still run.
+// FLATTEN-mode clean-up (v3.2-AX): find links on the copied tgtComp
+// whose source is the ORIGINAL component at origSrcPath (srcSlot ->
+// tgtSlot) - the link keepAllLinks preserved - and remove it. verify
+// reports it as STALE, dryRun as "would remove"; nothing changes then.
+private void clearKeptInternalLinks(
+  javax.baja.sys.BComponent tgtComp, String origSrcPath,
+  String srcSlot, String tgtSlot)
+{
+  javax.baja.sys.BLink[] links;
+  try { links = tgtComp.getLinks(); }
+  catch (Throwable t) { return; }
+
+  String tgtName = "?";
+  String tgtPath = "?";
+  try
+  {
+    tgtName = tgtComp.getName();
+    tgtPath = tgtComp.getSlotPath().toString();
+  }
+  catch (Throwable ignore) {}
+
+  for (int i = 0; i < links.length; i++)
+  {
+    javax.baja.sys.BLink link = links[i];
+    try
+    {
+      if (!tgtSlot.equals(strOf(invoke0(link, "getTargetSlotName")))) continue;
+      if (!srcSlot.equals(strOf(invoke0(link, "getSourceSlotName")))) continue;
+
+      javax.baja.sys.BComponent src = null;
+      Object srcOrdObj = invoke0(link, "getSourceOrd");
+      if (srcOrdObj instanceof javax.baja.naming.BOrd)
+      {
+        Object so = resolveOrd((javax.baja.naming.BOrd) srcOrdObj, tgtComp);
+        if (so instanceof javax.baja.sys.BComponent)
+          src = (javax.baja.sys.BComponent) so;
+      }
+      if (src == null) continue;
+      if (!origSrcPath.equals(src.getSlotPath().toString())) continue;
+
+      javax.baja.sys.Property prop = link.getPropertyInParent();
+      String linkName = (prop == null) ? "?" : prop.getName();
+      String srcName = src.getName();
+
+      if (isVerify())
+      {
+        writeToLinkerLog("INTERNAL LINK STALE: " + tgtPath + "[" + tgtSlot +
+          "] is still linked to the original " + origSrcPath + "[" + srcSlot + "]");
+        writeLinkerRow(srcName, origSrcPath, srcSlot, tgtName, tgtPath, tgtSlot,
+          "STALE", "Copy still linked to the original source (kept by keepAllLinks)",
+          "Verify", linkName, "0.000");
+      }
+      else if (isDryRun())
+      {
+        writeToLinkerLog("INTERNAL LINK DRYRUN: would remove link kept to the " +
+          "original " + origSrcPath + "[" + srcSlot + "] -> " + tgtPath + "[" + tgtSlot + "]");
+        writeLinkerRow(srcName, origSrcPath, srcSlot, tgtName, tgtPath, tgtSlot,
+          "DRYRUN", "Would remove link kept to the original source",
+          "Create", linkName, "0.000");
+      }
+      else if (prop != null)
+      {
+        tgtComp.remove(prop);
+        writeToLinkerLog("INTERNAL LINK CLEARED: removed link kept to the " +
+          "original " + origSrcPath + "[" + srcSlot + "] -> " + tgtPath + "[" + tgtSlot + "]");
+        writeLinkerRow(srcName, origSrcPath, srcSlot, tgtName, tgtPath, tgtSlot,
+          "REMOVED", "Removed link kept to the original source (flatten copy)",
+          "Create", linkName, "0.000");
+      }
+    }
+    catch (Throwable t)
+    {
+      writeToLinkerLog("INTERNAL LINK CLEAR ERROR on " + tgtPath + ": " +
+        describeException(t));
+    }
+  }
+}
+
 private void processInternalLinks(
   javax.baja.sys.BComponent folder, javax.baja.sys.BComponent dst)
 {
@@ -745,7 +1160,7 @@ private void processInternalLinks(
   }
 
   java.util.List links = captureInternalLinks(folder);
-  if (links.isEmpty()) return;
+  if (links.size() == 0) return;
 
   writeToLinkerLog("Internal links captured under '" + folderPath +
     "': " + links.size() + " - remapping to '" + dstPath + "'" +
@@ -753,22 +1168,22 @@ private void processInternalLinks(
 
   for (int i = 0; i < links.size(); i++)
   {
-    InternalLink lk = (InternalLink) links.get(i);
+    String[] lk = (String[]) links.get(i);
 
-    String newSrcPath = dstPath + lk.srcPath.substring(folderPath.length());
-    String newTgtPath = dstPath + lk.tgtPath.substring(folderPath.length());
+    String newSrcPath = dstPath + lk[IL_SRC_PATH].substring(folderPath.length());
+    String newTgtPath = dstPath + lk[IL_TGT_PATH].substring(folderPath.length());
 
     javax.baja.sys.BComponent srcComp = null;
     javax.baja.sys.BComponent tgtComp = null;
     try
     {
-      Object so = javax.baja.naming.BOrd.make(normalizeOrd(newSrcPath)).resolve().get();
+      Object so = resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(newSrcPath)));
       if (so instanceof javax.baja.sys.BComponent) srcComp = (javax.baja.sys.BComponent) so;
     }
     catch (Throwable ignore) {}
     try
     {
-      Object to = javax.baja.naming.BOrd.make(normalizeOrd(newTgtPath)).resolve().get();
+      Object to = resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(newTgtPath)));
       if (to instanceof javax.baja.sys.BComponent) tgtComp = (javax.baja.sys.BComponent) to;
     }
     catch (Throwable ignore) {}
@@ -776,11 +1191,20 @@ private void processInternalLinks(
     if (srcComp == null || tgtComp == null)
     {
       writeToLinkerLog("INTERNAL LINK SKIPPED: could not resolve at destination - " +
-        newSrcPath + "[" + lk.srcSlot + "] -> " + newTgtPath + "[" + lk.tgtSlot + "]");
+        newSrcPath + "[" + lk[IL_SRC_SLOT] + "] -> " + newTgtPath + "[" + lk[IL_TGT_SLOT] + "]");
       continue;
     }
 
-    processLinkRow(srcComp, lk.srcSlot, tgtComp, lk.tgtSlot);
+    // v3.2: each FLATTEN child is copied in its own Mark call, so a link
+    // from a sibling is outside that call's handle map. With keepAllLinks
+    // the copy arrives still linked to the ORIGINAL sibling. Clear that
+    // kept link first, or the input ends up fed by two live links.
+    // (Not in reverse: the copies are about to be deleted anyway.)
+    if (!(isDeleteMode() && !isVerify()))
+      clearKeptInternalLinks(tgtComp, lk[IL_SRC_PATH], lk[IL_SRC_SLOT],
+        lk[IL_TGT_SLOT]);
+
+    processLinkRow(srcComp, lk[IL_SRC_SLOT], tgtComp, lk[IL_TGT_SLOT]);
   }
 }
 
@@ -806,7 +1230,7 @@ private void updateVersion()
   {
     java.lang.reflect.Method m = this.getClass().getMethod(
       "setVersion", new Class[]{ String.class });
-    m.invoke(this, VERSION);
+    m.invoke(this, new Object[]{ VERSION });
   }
   catch (Exception ignore)
   {
@@ -814,7 +1238,7 @@ private void updateVersion()
     {
       java.lang.reflect.Method m = this.getClass().getMethod(
         "setVersion", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(VERSION));
+      m.invoke(this, new Object[]{ javax.baja.sys.BString.make(VERSION) });
     }
     catch (Exception ignore2) {}
   }
@@ -829,7 +1253,7 @@ private void updateQuickGuide()
   {
     java.lang.reflect.Method m = this.getClass().getMethod(
       "setQuickGuide", new Class[]{ String.class });
-    m.invoke(this, QUICK_GUIDE);
+    m.invoke(this, new Object[]{ QUICK_GUIDE });
   }
   catch (Exception ignore)
   {
@@ -837,7 +1261,7 @@ private void updateQuickGuide()
     {
       java.lang.reflect.Method m = this.getClass().getMethod(
         "setQuickGuide", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(QUICK_GUIDE));
+      m.invoke(this, new Object[]{ javax.baja.sys.BString.make(QUICK_GUIDE) });
     }
     catch (Exception ignore2) {}
   }
@@ -868,11 +1292,21 @@ private java.io.File resolveToFile(String pathOrOrd)
       p = p.substring(1);
   }
 
+  java.io.File home = stationHome();
+  if (home == null)
+  {
+    String msg = "PATH ERROR: station home folder not found - cannot use '" +
+      pathOrOrd + "'";
+    setStatus("[" + now() + "] " + msg);
+    log.warning("[" + LOG_TAG + "] " + msg);
+    return null;
+  }
+
   java.io.File f = new java.io.File(p);
   if (stationRelative || !f.isAbsolute())
-    f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
+    f = new java.io.File(home, p);
 
-  return sandboxToStationHome(f, pathOrOrd);
+  return sandboxToStationHome(f, home, pathOrOrd);
 }
 
 // Security: log/results/sample/manifest paths must resolve to somewhere
@@ -881,11 +1315,12 @@ private java.io.File resolveToFile(String pathOrOrd)
 // nor a "../" segment in a station-relative path can escape onto the
 // wider filesystem. Returns null (refusing the write/read) if it can't
 // verify containment - every caller already no-ops safely on null.
-private java.io.File sandboxToStationHome(java.io.File f, String original)
+private java.io.File sandboxToStationHome(
+  java.io.File f, java.io.File stationHomeDir, String original)
 {
   try
   {
-    java.io.File home = javax.baja.sys.Sys.getStationHome().getCanonicalFile();
+    java.io.File home = stationHomeDir.getCanonicalFile();
     java.io.File canon = f.getCanonicalFile();
     if (canon.equals(home) ||
         canon.getPath().startsWith(home.getPath() + java.io.File.separator))
@@ -1060,31 +1495,38 @@ private void pruneArchives(String activePath)
 
     String fileName = activeFile.getName();
     int dotIdx = fileName.lastIndexOf('.');
-    final String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
-    final String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
-    final int expectedLen = stem.length() + 1 + 19 + ext.length();
+    String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
+    String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
+    int expectedLen = stem.length() + 1 + 19 + ext.length();
 
-    java.io.File[] all = parent.listFiles(new java.io.FileFilter() {
-      public boolean accept(java.io.File f) {
-        if (!f.isFile()) return false;
-        String n = f.getName();
-        if (n.length() != expectedLen) return false;
-        if (!n.startsWith(stem + "_")) return false;
-        if (ext.length() > 0 && !n.endsWith(ext)) return false;
-        // Defensive: don't ever match the active file itself
-        if (n.equals(stem + ext)) return false;
-        return true;
-      }
-    });
+    // AX: no anonymous FileFilter / Comparator (a Program object keeps a
+    // single class file), so filter with a loop and sort the names.
+    java.io.File[] listed = parent.listFiles();
+    if (listed == null) return;
 
-    if (all == null || all.length <= max) return;
+    java.util.List matchNames = new java.util.ArrayList();
+    for (int i = 0; i < listed.length; i++)
+    {
+      java.io.File f = listed[i];
+      if (!f.isFile()) continue;
+      String n = f.getName();
+      if (n.length() != expectedLen) continue;
+      if (!n.startsWith(stem + "_")) continue;
+      if (ext.length() > 0 && !n.endsWith(ext)) continue;
+      // Defensive: don't ever match the active file itself
+      if (n.equals(stem + ext)) continue;
+      matchNames.add(n);
+    }
 
-    java.util.Arrays.sort(all, new java.util.Comparator() {
-      public int compare(Object a, Object b) {
-        return ((java.io.File) a).getName().compareTo(
-               ((java.io.File) b).getName());
-      }
-    });
+    if (matchNames.size() <= max) return;
+
+    String[] names = new String[matchNames.size()];
+    for (int i = 0; i < names.length; i++) names[i] = (String) matchNames.get(i);
+    java.util.Arrays.sort(names);
+
+    java.io.File[] all = new java.io.File[names.length];
+    for (int i = 0; i < names.length; i++)
+      all[i] = new java.io.File(parent, names[i]);
 
     int toDelete = all.length - max;
     for (int i = 0; i < toDelete; i++)
@@ -1219,7 +1661,7 @@ private String csvEscape(String s)
   if (s == null) s = "";
   if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 ||
       s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0)
-    return '"' + s.replace("\"", "\"\"") + '"';
+    return '"' + doubleQuotes(s) + '"';
   return s;
 }
 
@@ -1251,18 +1693,158 @@ private void writeLinkerRow(
 private String normalizeOrd(String ordStr)
 {
   if (ordStr == null) return ordStr;
-  ordStr = ordStr.trim();
+  ordStr = escapeSlotNames(ordStr.trim());
   if (ordStr.startsWith("slot:/") && !ordStr.startsWith("station:|"))
     return "station:|" + ordStr;
   return ordStr;
 }
 
+// ----------------------------------------------------
+// Slot-name escaping (v3.1-AX)
+// ----------------------------------------------------
+// Niagara slot names allow only ASCII letters, digits and '_' (and must
+// start with a letter). Anything else is stored escaped as $xx (two hex
+// digits) or $uxxxx: "VAV B-31" is really "VAV$20B$2d31". These helpers
+// escape the slot: part of an ord so names can be typed as Workbench
+// displays them. Already-escaped sequences are copied through as-is, so
+// escaped, unescaped and mixed input all end up the same.
+
+// Escape every slot name in the slot: part(s) of an ord. Other ord
+// parts (station:, bql:, file:, h:, ...) are returned unchanged.
+private String escapeSlotNames(String ord)
+{
+  if (ord == null || ord.indexOf("slot:") < 0) return ord;
+  StringBuffer out = new StringBuffer();
+  int start = 0;
+  int n = ord.length();
+  for (int i = 0; i <= n; i++)
+  {
+    if (i == n || ord.charAt(i) == '|')
+    {
+      String part = ord.substring(start, i);
+      if (part.startsWith("slot:"))
+        out.append("slot:").append(escapeSlotPath(part.substring(5)));
+      else
+        out.append(part);
+      if (i < n) out.append('|');
+      start = i + 1;
+    }
+  }
+  return out.toString();
+}
+
+// Escape each '/'-separated name in a slot path, keeping the slashes.
+private String escapeSlotPath(String path)
+{
+  StringBuffer out = new StringBuffer();
+  int start = 0;
+  int n = path.length();
+  for (int i = 0; i <= n; i++)
+  {
+    if (i == n || path.charAt(i) == '/')
+    {
+      out.append(escapeSlotName(path.substring(start, i)));
+      if (i < n) out.append('/');
+      start = i + 1;
+    }
+  }
+  return out.toString();
+}
+
+// Escape one slot name. Letters always pass; digits and '_' pass except
+// as the first character; a valid existing escape ($xx / $uxxxx) is
+// copied through; everything else becomes $xx (or $uxxxx above 0xff).
+private String escapeSlotName(String name)
+{
+  if (name.length() == 0) return name;
+  StringBuffer sb = new StringBuffer();
+  int n = name.length();
+  int i = 0;
+  while (i < n)
+  {
+    char c = name.charAt(i);
+    boolean first = (i == 0);
+
+    if (c == '$')
+    {
+      int len = escapeLengthAt(name, i);
+      if (len > 0)
+      {
+        sb.append(name.substring(i, i + len));
+        i += len;
+        continue;
+      }
+    }
+
+    boolean letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    boolean digit  = (c >= '0' && c <= '9');
+    if (letter || (!first && (digit || c == '_')))
+      sb.append(c);
+    else if (c <= 0xff)
+      sb.append('$').append(hex(c, 2));
+    else
+      sb.append("$u").append(hex(c, 4));
+    i++;
+  }
+  return sb.toString();
+}
+
+// Length of a valid escape starting at name[i] ('$'): 6 for $uxxxx,
+// 3 for $xx, 0 if what follows isn't a valid escape.
+private int escapeLengthAt(String name, int i)
+{
+  int n = name.length();
+  if (i + 5 < n && name.charAt(i + 1) == 'u' &&
+      isHex(name.charAt(i + 2)) && isHex(name.charAt(i + 3)) &&
+      isHex(name.charAt(i + 4)) && isHex(name.charAt(i + 5)))
+    return 6;
+  if (i + 2 < n && isHex(name.charAt(i + 1)) && isHex(name.charAt(i + 2)))
+    return 3;
+  return 0;
+}
+
+private boolean isHex(char c)
+{
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+         (c >= 'A' && c <= 'F');
+}
+
+// Lowercase hex of c, zero-padded to width digits.
+private String hex(char c, int width)
+{
+  String h = Integer.toHexString(c);
+  StringBuffer sb = new StringBuffer();
+  for (int i = h.length(); i < width; i++) sb.append('0');
+  return sb.append(h).toString();
+}
+
+// " (escaped: <ord>)" when escaping changed the ord, else "". Added to
+// "cannot resolve" error reasons so a failing row shows what was tried.
+private String escapedNote(String raw)
+{
+  if (raw == null) return "";
+  String plain = raw.trim();
+  if (escapeSlotNames(plain).equals(plain)) return "";
+  return " (escaped: " + normalizeOrd(raw) + ")";
+}
+
 private int getModeOrdinal()
 {
   javax.baja.status.BStatusEnum m = getDestinationMode();
-  String tag = (m != null) ? m.toString().trim() : "Direct";
-  if (tag.contains("BQL")) return 1;
-  if (tag.contains("CSV")) return 2;
+  if (m == null) return 0;
+
+  // Ordinal first (range is {Direct=0,BQL=1,CSV=2}); tag text only as
+  // a fallback, since tags can come back escaped (e.g. "$20").
+  try
+  {
+    int ord = m.getValue().getOrdinal();
+    if (ord >= 0 && ord <= 2) return ord;
+  }
+  catch (Exception ignore) {}
+
+  String tag = m.toString().trim();
+  if (tag.indexOf("BQL") >= 0) return 1;
+  if (tag.indexOf("CSV") >= 0) return 2;
   return 0;
 }
 
@@ -1283,7 +1865,7 @@ private int countCsvRows(javax.baja.naming.BOrd csvOrd)
   try
   {
     javax.baja.file.BIFile csvFile =
-      (javax.baja.file.BIFile) csvOrd.resolve().get();
+      (javax.baja.file.BIFile) resolveOrd(csvOrd);
     is = csvFile.getInputStream();
     br = new java.io.BufferedReader(
       new java.io.InputStreamReader(is, "UTF-8"));
@@ -1293,7 +1875,7 @@ private int countCsvRows(javax.baja.naming.BOrd csvOrd)
     {
       rowNum++;
       if (rowNum == 1) continue;
-      if (!line.trim().isEmpty()) count++;
+      if (line.trim().length() > 0) count++;
     }
   }
   catch (Exception ignore) {}
@@ -1325,7 +1907,7 @@ private int countLinksCsvRows(java.io.File linksFile)
     {
       rowNum++;
       if (rowNum == 1) continue;
-      if (!line.trim().isEmpty()) count++;
+      if (line.trim().length() > 0) count++;
     }
   }
   catch (Exception ignore) {}
@@ -1352,21 +1934,23 @@ private javax.baja.naming.BOrd resolveCsvOrd() throws Exception
 private javax.baja.naming.BOrd buildDestOrd(String cellValue)
 {
   String v = (cellValue == null) ? "" : cellValue.trim();
-  if (v.isEmpty()) return null;
-  if (v.startsWith("station:")) return javax.baja.naming.BOrd.make(v);
-  if (v.startsWith("slot:/"))   return javax.baja.naming.BOrd.make("station:|" + v);
-  if (v.startsWith("/"))        return javax.baja.naming.BOrd.make("station:|slot:" + v);
-  return javax.baja.naming.BOrd.make("station:|slot:/" + v);
+  if (v.length() == 0) return null;
+  String o;
+  if (v.startsWith("station:"))   o = v;
+  else if (v.startsWith("slot:/")) o = "station:|" + v;
+  else if (v.startsWith("/"))      o = "station:|slot:" + v;
+  else                             o = "station:|slot:/" + v;
+  return javax.baja.naming.BOrd.make(escapeSlotNames(o));
 }
 
 private String firstCsvField(String line)
 {
   if (line == null) return null;
   String s = line.trim();
-  if (s.isEmpty()) return "";
+  if (s.length() == 0) return "";
   if (s.charAt(0) == '"')
   {
-    java.lang.StringBuilder sb = new java.lang.StringBuilder();
+    StringBuffer sb = new StringBuffer();
     boolean inQuote = true;
     for (int i = 1; i < s.length(); i++)
     {
@@ -1399,7 +1983,7 @@ private String[] parseCsvRow(String line)
 {
   if (line == null) return new String[0];
   java.util.ArrayList fields = new java.util.ArrayList();
-  java.lang.StringBuilder cur = new java.lang.StringBuilder();
+  StringBuffer cur = new StringBuffer();
   boolean inQuote = false;
   int n = line.length();
   for (int i = 0; i < n; i++)
@@ -1486,7 +2070,7 @@ private String processCopy(
     return "FAILED";
   }
 
-  long t0 = System.nanoTime();
+  long t0 = System.currentTimeMillis();
 
   // ----------------------------------------------------
   // DELETE MODE
@@ -1517,12 +2101,11 @@ private String processCopy(
     // Dry run in delete mode
     if (isDryRun())
     {
-      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-        (System.nanoTime() - t0) / 1000000.0);
+      String durStr = fmtMs(t0);
       String detail = "DRYRUN (delete): would remove " + srcName +
         " from " + dstName;
       setStatus("[" + now() + "] " + detail);
-      log.info("[ComponentCopier] " + detail);
+      log.message("[ComponentCopier] " + detail);
       writeToLog(detail);
       writeToResults(
         csvEscape(now()) + "," +
@@ -1539,12 +2122,11 @@ private String processCopy(
     try
     {
       dst.remove(srcName);
-      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-        (System.nanoTime() - t0) / 1000000.0);
+      String durStr = fmtMs(t0);
       String detail = "DELETED: " + srcName + " from " + dstName +
         " (" + durStr + "ms)";
       setStatus("[" + now() + "] " + detail);
-      log.info("[ComponentCopier] " + detail);
+      log.message("[ComponentCopier] " + detail);
       writeToLog(detail);
       writeToResults(
         csvEscape(now()) + "," +
@@ -1558,12 +2140,11 @@ private String processCopy(
     }
     catch (Exception e)
     {
-      String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-        (System.nanoTime() - t0) / 1000000.0);
+      String durStr = fmtMs(t0);
       String detail = "FAILED (delete): " + srcName +
         " from " + dstName + " - " + e.getMessage();
       setStatus("[" + now() + "] " + detail);
-      log.severe("[ComponentCopier] " + detail);
+      log.error("[ComponentCopier] " + detail);
       writeToLog(detail);
       writeToResults(
         csvEscape(now()) + "," +
@@ -1651,7 +2232,7 @@ private String processCopy(
   }
 
   // 3. Destination slot path is empty
-  if (dstPath == null || dstPath.trim().isEmpty())
+  if (dstPath == null || dstPath.trim().length() == 0)
   {
     boolean dry = isDryRun();
     String detail = dry ? "DRYRUN: would skip - destination is not a valid container"
@@ -1675,11 +2256,10 @@ private String processCopy(
   // ----------------------------------------------------
   if (isDryRun())
   {
-    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-        (System.nanoTime() - t0) / 1000000.0);
+    String durStr = fmtMs(t0);
     String detail = "DRYRUN: would copy " + srcName + " -> " + dstName;
     setStatus("[" + now() + "] " + detail);
-    log.info("[ComponentCopier] " + detail);
+    log.message("[ComponentCopier] " + detail);
     writeToLog(detail);
     writeToResults(
       csvEscape(now()) + "," +
@@ -1698,15 +2278,13 @@ private String processCopy(
   try
   {
     javax.baja.sys.BComponent params = makeParams();
-    Mark mark = new Mark(src);
-    mark.copyTo(dst, params, null);
+    copyComponent(src, dst, params);
 
-    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-        (System.nanoTime() - t0) / 1000000.0);
+    String durStr = fmtMs(t0);
     String detail = "COPIED: " + srcName + " -> " + dstName +
       " (" + durStr + "ms)";
     setStatus("[" + now() + "] " + detail);
-    log.info("[ComponentCopier] SUCCESS - " + detail);
+    log.message("[ComponentCopier] SUCCESS - " + detail);
     writeToLog("SUCCESS - " + detail);
     writeToResults(
       csvEscape(now()) + "," +
@@ -1720,12 +2298,11 @@ private String processCopy(
   }
   catch (Exception e)
   {
-    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-        (System.nanoTime() - t0) / 1000000.0);
+    String durStr = fmtMs(t0);
     String detail = "FAILED: " + srcName + " -> " + dstName +
       " - " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
-    log.severe("[ComponentCopier] " + detail);
+    log.error("[ComponentCopier] " + detail);
     writeToLog(detail);
     writeToResults(
       csvEscape(now()) + "," +
@@ -1771,19 +2348,18 @@ private String processVerify(
     return "ERROR";
   }
 
-  long t0 = System.nanoTime();
+  long t0 = System.currentTimeMillis();
 
   try
   {
     boolean exists = (dst.getSlot(srcName) != null);
-    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-      (System.nanoTime() - t0) / 1000000.0);
+    String durStr = fmtMs(t0);
 
     if (exists)
     {
       String detail = "VERIFY OK: " + srcName + " exists at " + dstName;
       setStatus("[" + now() + "] " + detail);
-      log.info("[ComponentCopier] " + detail);
+      log.message("[ComponentCopier] " + detail);
       writeToLog(detail);
       writeToResults(
         csvEscape(now()) + "," +
@@ -1814,12 +2390,11 @@ private String processVerify(
   }
   catch (Exception e)
   {
-    String durStr = String.format(java.util.Locale.ROOT, "%.3f",
-      (System.nanoTime() - t0) / 1000000.0);
+    String durStr = fmtMs(t0);
     String detail = "VERIFY ERROR: " + srcName + " at " + dstName +
       " - " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
-    log.severe("[ComponentCopier] " + detail);
+    log.error("[ComponentCopier] " + detail);
     writeToLog(detail);
     writeToResults(
       csvEscape(now()) + "," +
@@ -1899,7 +2474,7 @@ private void writeSampleCsvs()
     "slot:/Drivers/Site1/Floor1/Zone1/Damper,Command");
   writeToLog("Sample links CSV written to: " + linksPath);
 
-  log.info("[ComponentCopier] Sample CSVs written: " +
+  log.message("[ComponentCopier] Sample CSVs written: " +
     copyPath + " and " + linksPath);
 }
 
@@ -1907,6 +2482,116 @@ private void writeSampleCsvs()
 // Link creation (post-copy) - same format as LinkCreator CSV
 // 5 cols: BOrd1, Slot1, Direction (> or <), BOrd2, Slot2
 // ----------------------------------------------------
+// ----------------------------------------------------
+// Link health checks (v3.2-AX)
+// ----------------------------------------------------
+// BComponent.add() of a BLink does not throw when the link can't work:
+// the framework activates it afterwards and only logs a failure. A bad
+// slot name, a source that won't resolve, a slot type the framework
+// refuses to link, or the station's licensed link count being reached
+// all return normally. So: check both slots BEFORE adding, and read the
+// link back AFTER adding. Optional framework calls (isActive, the FAULT
+// flag) are made by reflection and skipped if a build doesn't have them.
+
+// Null if both ends exist, else the reason (names the missing slot).
+private String preLinkCheck(
+  javax.baja.sys.BComponent src, String srcSlot,
+  javax.baja.sys.BComponent tgt, String tgtSlot)
+{
+  String r = missingSlot(src, srcSlot, "Source");
+  if (r != null) return r;
+  return missingSlot(tgt, tgtSlot, "Target");
+}
+
+private String missingSlot(
+  javax.baja.sys.BComponent comp, String slotName, String role)
+{
+  String compName = "?";
+  try { compName = comp.getName(); } catch (Throwable ignore) {}
+  try
+  {
+    if (comp.getSlot(slotName) != null) return null;
+  }
+  catch (Throwable t)
+  {
+    return role + " slot '" + slotName + "' on " + compName +
+      " could not be checked: " + describeException(t);
+  }
+  return role + " slot '" + slotName + "' not found on " + compName;
+}
+
+// Health of the link stored on tgt under linkName: null if it is
+// working, else the reason it is not.
+private String linkHealth(javax.baja.sys.BComponent tgt, String linkName)
+{
+  javax.baja.sys.Slot s = null;
+  try { s = tgt.getSlot(linkName); } catch (Throwable ignore) {}
+  if (s == null)
+    return "the framework did not keep the link (slot type refused or " +
+      "source did not resolve)";
+
+  Object v = null;
+  try { v = tgt.get(linkName); } catch (Throwable ignore) {}
+  if (!(v instanceof javax.baja.sys.BLink))
+    return "slot '" + linkName + "' is not a link";
+
+  int fault = flagConstant("FAULT");
+  if (fault != 0 && (slotFlags(tgt, s) & fault) != 0)
+    return "the link is fault-flagged (e.g. the station's licensed link " +
+      "count is reached)";
+
+  Object active = callNoArg(v, "isActive");
+  if (active instanceof Boolean && !((Boolean) active).booleanValue())
+    return "the link is not active (source ord or slot did not resolve)";
+
+  return null;
+}
+
+// Remove a link that was added but isn't working, so a re-run doesn't
+// skip the row as "already exists". Best effort.
+private void removeDeadLink(javax.baja.sys.BComponent tgt, String linkName)
+{
+  try { if (tgt.getSlot(linkName) != null) tgt.remove(linkName); }
+  catch (Throwable ignore) {}
+}
+
+// javax.baja.sys.Flags.<name>, or 0 if this build doesn't define it.
+private int flagConstant(String name)
+{
+  try
+  {
+    Class fc = Class.forName("javax.baja.sys.Flags");
+    return fc.getField(name).getInt(null);
+  }
+  catch (Throwable t) { return 0; }
+}
+
+// comp.getFlags(slot), or 0 if it can't be read.
+private int slotFlags(javax.baja.sys.BComponent comp, javax.baja.sys.Slot s)
+{
+  try
+  {
+    java.lang.reflect.Method m = comp.getClass().getMethod(
+      "getFlags", new Class[]{ javax.baja.sys.Slot.class });
+    Object r = m.invoke(comp, new Object[]{ s });
+    if (r instanceof Integer) return ((Integer) r).intValue();
+  }
+  catch (Throwable ignore) {}
+  return 0;
+}
+
+// Call a public no-arg method, returning null on any failure.
+private Object callNoArg(Object target, String method)
+{
+  try
+  {
+    java.lang.reflect.Method m =
+      target.getClass().getMethod(method, new Class[0]);
+    return m.invoke(target, new Object[0]);
+  }
+  catch (Throwable t) { return null; }
+}
+
 private String buildLinkName(
   javax.baja.sys.BComponent srcComp, String srcSlotStr, String tgtSlotStr)
 {
@@ -1926,7 +2611,7 @@ private String processLinkRow(
   javax.baja.sys.BComponent srcComp, String srcSlotStr,
   javax.baja.sys.BComponent tgtComp, String tgtSlotStr)
 {
-  long t0 = System.nanoTime();
+  long t0 = System.currentTimeMillis();
   String linkMode = isVerify()    ? "Verify"
                   : isDeleteMode() ? "Reverse"
                                    : "Create";
@@ -1949,7 +2634,17 @@ private String processLinkRow(
     if (isVerify())
     {
       boolean exists = (tgtComp.getSlot(linkName) != null);
+      String health = exists ? linkHealth(tgtComp, linkName) : null;
       String durStr = durMs(t0);
+      if (exists && health != null)
+      {
+        writeToLinkerLog("LINK VERIFY BROKEN: " + srcName + "[" + srcSlotStr +
+          "] -> " + tgtName + "[" + tgtSlotStr + "] exists but " + health);
+        writeLinkerRow(srcName, srcPath, srcSlotStr,
+          tgtName, tgtPath, tgtSlotStr,
+          "BROKEN", "Link exists but " + health, linkMode, linkName, durStr);
+        return "ERROR";
+      }
       if (exists)
       {
         writeToLinkerLog("LINK VERIFY OK: " + srcName + "[" + srcSlotStr +
@@ -2025,6 +2720,20 @@ private String processLinkRow(
       return dry ? "DRYRUN" : "SKIPPED";
     }
 
+    // v3.2: both slots must exist before a link is added - add() would
+    // accept a misspelled slot and leave a dead link. dryRun reports it too.
+    String slotProblem = preLinkCheck(srcComp, srcSlotStr, tgtComp, tgtSlotStr);
+    if (slotProblem != null)
+    {
+      writeToLinkerLog((isDryRun() ? "LINK DRYRUN: would fail - " : "LINK ERROR: ") +
+        slotProblem + " --> " + srcName + "[" + srcSlotStr + "] -> " +
+        tgtName + "[" + tgtSlotStr + "]");
+      writeLinkerRow(srcName, srcPath, srcSlotStr,
+        tgtName, tgtPath, tgtSlotStr,
+        "ERROR", slotProblem, linkMode, linkName, "0.000");
+      return "ERROR";
+    }
+
     if (isDryRun())
     {
       String durStr = durMs(t0);
@@ -2042,9 +2751,26 @@ private String processLinkRow(
       javax.baja.naming.BOrd.make("h:" + srcHandle);
     javax.baja.sys.BLink newLink =
       new javax.baja.sys.BLink(srcHandleOrd, srcSlotStr, tgtSlotStr, true);
-    tgtComp.add(linkName, newLink, null);
+    tgtComp.add(linkName, newLink);
 
     String durStr = durMs(t0);
+
+    // v3.2: add() returns normally even when the link can't work. Read it
+    // back; a dropped / inactive / fault-flagged link is removed and
+    // reported as ERROR instead of LINKED.
+    String health = linkHealth(tgtComp, linkName);
+    if (health != null)
+    {
+      removeDeadLink(tgtComp, linkName);
+      writeToLinkerLog("LINK ERROR: link added but " + health + " - removed --> " +
+        srcName + "[" + srcSlotStr + "] -> " + tgtName + "[" + tgtSlotStr + "]");
+      writeLinkerRow(srcName, srcPath, srcSlotStr,
+        tgtName, tgtPath, tgtSlotStr,
+        "ERROR", "Link added but " + health + " - removed",
+        linkMode, linkName, durStr);
+      return "ERROR";
+    }
+
     writeToLinkerLog("LINKED: " + srcName + "[" + srcSlotStr +
       "] -> " + tgtName + "[" + tgtSlotStr + "]");
     writeLinkerRow(srcName, srcPath, srcSlotStr,
@@ -2089,7 +2815,7 @@ private void executeLinksCsv(String linksCsvPath)
     (isVerify()    ? " [VERIFY]"  : "") +
     (isDeleteMode() && !isVerify() ? " [REVERSE]" : "") + " ---");
   setStatus("[" + now() + "] " + phaseLabel + " links CSV...");
-  log.info("[ComponentCopier] " + phaseLabel +
+  log.message("[ComponentCopier] " + phaseLabel +
     " links CSV: " + linksCsvPath);
 
   java.io.File linksFile = resolveToFile(linksCsvPath);
@@ -2128,7 +2854,7 @@ private void executeLinksCsv(String linksCsvPath)
       if (rowNum == 1) continue; // skip header
 
       line = line.trim();
-      if (line.isEmpty()) continue;
+      if (line.length() == 0) continue;
 
       // Cancellation checkpoint
       if (isCancelled())
@@ -2176,11 +2902,11 @@ private void executeLinksCsv(String linksCsvPath)
       try
       {
         Object o1 =
-          javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)).resolve().get();
+          resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(bord1Str)));
         if (!(o1 instanceof javax.baja.sys.BComponent))
         {
           String reason = "BOrd1 resolved to a non-component (" +
-            (o1 == null ? "null" : o1.getClass().getSimpleName()) +
+            (o1 == null ? "null" : simpleName(o1)) +
             "): " + bord1Str;
           writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
           writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
@@ -2194,7 +2920,7 @@ private void executeLinksCsv(String linksCsvPath)
       catch (Exception e)
       {
         String reason = "BOrd1 cannot resolve: " + bord1Str +
-          " -- " + describeException(e);
+          escapedNote(bord1Str) + " -- " + describeException(e);
         writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
         writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
           "", bord2Str, slot2Str, "ERROR", reason,
@@ -2207,11 +2933,11 @@ private void executeLinksCsv(String linksCsvPath)
       try
       {
         Object o2 =
-          javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)).resolve().get();
+          resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(bord2Str)));
         if (!(o2 instanceof javax.baja.sys.BComponent))
         {
           String reason = "BOrd2 resolved to a non-component (" +
-            (o2 == null ? "null" : o2.getClass().getSimpleName()) +
+            (o2 == null ? "null" : simpleName(o2)) +
             "): " + bord2Str;
           writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
           writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
@@ -2225,7 +2951,7 @@ private void executeLinksCsv(String linksCsvPath)
       catch (Exception e)
       {
         String reason = "BOrd2 cannot resolve: " + bord2Str +
-          " -- " + describeException(e);
+          escapedNote(bord2Str) + " -- " + describeException(e);
         writeToLinkerLog("LINK row " + rowNum + " ERROR: " + reason);
         writeLinkerRow("(row " + rowNum + ")", bord1Str, slot1Str,
           "", bord2Str, slot2Str, "ERROR", reason,
@@ -2297,7 +3023,7 @@ private void executeLinksCsv(String linksCsvPath)
   writeToLinkerLog(linkSummary);
   writeLinkerSummary(linked, removed, skipped, errors, dryrun, found, missing);
   setStatus("[" + now() + "] " + linkSummary);
-  log.info("[ComponentCopier] " + linkSummary);
+  log.message("[ComponentCopier] " + linkSummary);
   writeToLog(linkSummary);
 }
 
@@ -2310,7 +3036,7 @@ private void executeDirect(long runStart) throws Exception
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
     (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
-  log.info("[ComponentCopier] Mode: DIRECT");
+  log.message("[ComponentCopier] Mode: DIRECT");
 
   javax.baja.naming.BOrd dstOrd = getCopyTo();
   if (dstOrd == null || dstOrd.isNull())
@@ -2321,7 +3047,7 @@ private void executeDirect(long runStart) throws Exception
   }
 
   java.util.List sourceOrds = getSourceOrdStrings();
-  if (sourceOrds.isEmpty())
+  if (sourceOrds.size() == 0)
   {
     String msg = "[" + now() + "] ERROR: componentSource not set";
     setStatus(msg); log.warning("[ComponentCopier] " + msg);
@@ -2329,7 +3055,8 @@ private void executeDirect(long runStart) throws Exception
   }
 
   javax.baja.sys.BComponent dst =
-    (javax.baja.sys.BComponent) dstOrd.resolve().get();
+    (javax.baja.sys.BComponent) resolveOrd(javax.baja.naming.BOrd.make(
+      normalizeOrd(dstOrd.toString())));
 
   writeToLog("Sources: " + sourceOrds.size() +
     " | Destination: " + dst.getName());
@@ -2369,7 +3096,7 @@ private void executeDirect(long runStart) throws Exception
     if (flattenFolder && !reverse) processInternalLinks(src, dst);
   }
 
-  long totalMs = (System.nanoTime() - runStart) / 1000000L;
+  long totalMs = (System.currentTimeMillis() - runStart);
   String summary = buildSummary("Direct", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
   writeToLog(summary);
@@ -2386,7 +3113,7 @@ private void executeBQL(long runStart) throws Exception
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
     (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
-  log.info("[ComponentCopier] Mode: BQL");
+  log.message("[ComponentCopier] Mode: BQL");
 
   javax.baja.naming.BOrd dstOrd = getCopyTo();
   if (dstOrd == null || dstOrd.isNull())
@@ -2396,14 +3123,15 @@ private void executeBQL(long runStart) throws Exception
   }
 
   java.util.List sourceOrds = getSourceOrdStrings();
-  if (sourceOrds.isEmpty())
+  if (sourceOrds.size() == 0)
   {
     String msg = "[" + now() + "] ERROR: componentSource not set";
     setStatus(msg); writeToLog(msg); return;
   }
 
-  Object bqlResult = dstOrd.resolve().get();
-  writeToLog("BQL result type: " + bqlResult.getClass().getName());
+  Object bqlResult = resolveOrd(dstOrd);
+  writeToLog("BQL result type: " +
+    (bqlResult == null ? "null" : bqlResult.getClass().getName()));
 
   // ----------------------------------------------------
   // Materialize the destination list BEFORE any copying starts.
@@ -2417,63 +3145,13 @@ private void executeBQL(long runStart) throws Exception
   java.util.List destinations = new java.util.ArrayList();
   int[] counts = new int[5];
 
-  try
-  {
-    java.lang.reflect.Method cursorMethod =
-      bqlResult.getClass().getMethod("cursor");
-    Object cursor = cursorMethod.invoke(bqlResult);
-
-    java.lang.reflect.Method nextMethod =
-      cursor.getClass().getMethod("next");
-    java.lang.reflect.Method getMethod =
-      cursor.getClass().getMethod("get");
-    java.lang.reflect.Method closeMethod =
-      cursor.getClass().getMethod("close");
-
-    int rowNum = 0;
-    try
-    {
-      while (((Boolean) nextMethod.invoke(cursor)).booleanValue())
-      {
-        rowNum++;
-
-        if (isCancelled())
-        {
-          writeToLog("BQL destination read CANCELLED before row " + rowNum);
-          break;
-        }
-
-        try
-        {
-          Object rowObj = getMethod.invoke(cursor);
-
-          if (!(rowObj instanceof javax.baja.sys.BComponent))
-          {
-            writeToLog("SKIPPED BQL row " + rowNum +
-              ": result is not a BComponent (" +
-              rowObj.getClass().getName() + ")");
-            counts[1]++;
-            continue;
-          }
-
-          destinations.add(rowObj);
-        }
-        catch (Exception e)
-        {
-          counts[2]++;
-          writeToLog("BQL ERROR reading row " + rowNum + ": " +
-            describeException(e));
-        }
-      }
-    }
-    finally { closeMethod.invoke(cursor); }
-  }
-  catch (Exception e)
-  {
-    writeToLog("BQL CURSOR ERROR: " + e.getMessage());
-    setStatus("[" + now() + "] BQL CURSOR ERROR: " + e.getMessage());
-    return;
-  }
+  // AX: read through BICollection / Cursor (see readBqlComponents).
+  // Non-component rows are counted as Skipped, as in the N4 build.
+  int[] bqlBad = new int[1];
+  java.util.List bqlRows = readBqlComponents(bqlResult, bqlBad, "destination");
+  if (bqlRows == null) return;
+  destinations.addAll(bqlRows);
+  counts[1] += bqlBad[0];
 
   writeToLog("BQL destinations captured: " + destinations.size() +
     " | Sources: " + sourceOrds.size());
@@ -2544,10 +3222,10 @@ private void executeBQL(long runStart) throws Exception
     }
   }
 
-  long totalMs = (System.nanoTime() - runStart) / 1000000L;
+  long totalMs = (System.currentTimeMillis() - runStart);
   String summary = buildSummary("BQL", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
-  log.info("[ComponentCopier] " + summary);
+  log.message("[ComponentCopier] " + summary);
   writeToLog(summary);
   writeResultsSummary(
     counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
@@ -2562,7 +3240,7 @@ private void executeCSV(long runStart) throws Exception
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
     (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
-  log.info("[ComponentCopier] Mode: CSV");
+  log.message("[ComponentCopier] Mode: CSV");
 
   javax.baja.naming.BOrd csvOrd = resolveCsvOrd();
   if (csvOrd == null)
@@ -2575,7 +3253,7 @@ private void executeCSV(long runStart) throws Exception
   writeToLog("Using CSV: " + csvOrd.toString());
 
   java.util.List sourceOrds = getSourceOrdStrings();
-  if (sourceOrds.isEmpty())
+  if (sourceOrds.size() == 0)
   {
     String msg = "[" + now() + "] ERROR: componentSource not set";
     setStatus(msg); writeToLog(msg); return;
@@ -2595,7 +3273,7 @@ private void executeCSV(long runStart) throws Exception
   int[] counts = new int[5];
 
   javax.baja.file.BIFile csvFile =
-    (javax.baja.file.BIFile) csvOrd.resolve().get();
+    (javax.baja.file.BIFile) resolveOrd(csvOrd);
   java.io.InputStream is = csvFile.getInputStream();
   java.io.BufferedReader br = new java.io.BufferedReader(
     new java.io.InputStreamReader(is, "UTF-8"));
@@ -2626,7 +3304,7 @@ private void executeCSV(long runStart) throws Exception
       }
 
       line = line.trim();
-      if (line.isEmpty()) continue;
+      if (line.length() == 0) continue;
 
       // Cancellation checkpoint
       if (isCancelled())
@@ -2640,7 +3318,7 @@ private void executeCSV(long runStart) throws Exception
         dataRow + " of " + totalRows + "...");
 
       String destStr = firstCsvField(line);
-      if (destStr == null || destStr.isEmpty())
+      if (destStr == null || destStr.length() == 0)
       {
         writeToLog("SKIPPED row " + rowNum + ": empty destination");
         counts[1]++;
@@ -2658,7 +3336,7 @@ private void executeCSV(long runStart) throws Exception
           continue;
         }
 
-        Object resolved = destOrd.resolve().get();
+        Object resolved = resolveOrd(destOrd);
 
         if (!(resolved instanceof javax.baja.sys.BComponent))
         {
@@ -2756,10 +3434,10 @@ private void executeCSV(long runStart) throws Exception
     }
   }
 
-  long totalMs = (System.nanoTime() - runStart) / 1000000L;
+  long totalMs = (System.currentTimeMillis() - runStart);
   String summary = buildSummary("CSV", counts, totalMs);
   setStatus("[" + now() + "] " + summary);
-  log.info("[ComponentCopier] " + summary);
+  log.message("[ComponentCopier] " + summary);
   writeToLog(summary);
   writeResultsSummary(
     counts[0], counts[1], counts[2], counts[3], counts[4], totalMs);
@@ -2770,7 +3448,7 @@ public void onStart() throws Exception
   updateVersion();
   updateQuickGuide();
   setStatus("[" + now() + "] Ready");
-  log.info("[ComponentCopier] " + VERSION +
+  log.message("[ComponentCopier] " + VERSION +
     " Service started - Ready");
   writeToLog(VERSION + " Service started - Ready");
 }
@@ -2813,7 +3491,7 @@ public void onCancel() throws Exception
   cancelRequested = true;
   String msg = "Cancel requested - run will stop after current row";
   setStatus("[" + now() + "] " + msg);
-  log.info("[ComponentCopier] " + msg);
+  log.message("[ComponentCopier] " + msg);
   writeToLog(msg);
 }
 
@@ -2825,7 +3503,7 @@ public void onPruneArchives() throws Exception
   String startMsg = "Manual prune requested (maxArchives=" +
     resolveMaxArchives() + ")";
   setStatus("[" + now() + "] " + startMsg);
-  log.info("[ComponentCopier] " + startMsg);
+  log.message("[ComponentCopier] " + startMsg);
   writeToLog(startMsg);
 
   pruneArchives(resolveLogPath());
@@ -2836,7 +3514,7 @@ public void onPruneArchives() throws Exception
   String done = "Prune complete (kept up to " +
     resolveMaxArchives() + " of each)";
   setStatus("[" + now() + "] " + done);
-  log.info("[ComponentCopier] " + done);
+  log.message("[ComponentCopier] " + done);
   writeToLog(done);
 }
 
@@ -2850,7 +3528,7 @@ public void onCreateSampleCsv() throws Exception
   cancelRequested = false;
 
   setStatus("[" + now() + "] Writing sample CSV files...");
-  log.info("[ComponentCopier] onCreateSampleCsv triggered");
+  log.message("[ComponentCopier] onCreateSampleCsv triggered");
   writeToLog(VERSION + " onCreateSampleCsv triggered");
 
   try
@@ -2860,20 +3538,20 @@ public void onCreateSampleCsv() throws Exception
       "copyTo (and optionally linksCsvPath) at the edited files.";
     setStatus("[" + now() + "] " + msg);
     writeToLog(msg);
-    log.info("[ComponentCopier] " + msg);
+    log.message("[ComponentCopier] " + msg);
   }
   catch (Exception e)
   {
     String detail = "SAMPLE CSV ERROR: " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
-    log.severe("[ComponentCopier] " + detail);
+    log.error("[ComponentCopier] " + detail);
     writeToLog(detail);
   }
 }
 
 private void runJob() throws Exception
 {
-  long runStart = System.nanoTime();
+  long runStart = System.currentTimeMillis();
 
   archiveLogFile();
   initResultsCsv();
@@ -2881,7 +3559,7 @@ private void runJob() throws Exception
   String trigger = isVerify() ? "onVerify"
                   : isDryRun() ? "onDryRun"
                                : "onExecute";
-  log.info("[ComponentCopier] " + trigger + " triggered");
+  log.message("[ComponentCopier] " + trigger + " triggered");
   writeToLog(VERSION + " " + trigger + " triggered" +
     (isVerify()  ? " [VERIFY]"   : "") +
     (isDryRun()  ? " [DRY RUN]"  : "") +
@@ -2903,7 +3581,7 @@ private void runJob() throws Exception
   boolean dstEmpty = true;
   try
   {
-    srcEmpty = getSourceOrdStrings().isEmpty();
+    srcEmpty = getSourceOrdStrings().size() == 0;
     javax.baja.naming.BOrd dstOrd = getCopyTo();
     dstEmpty = (dstOrd == null || dstOrd.isNull());
   }
@@ -2925,7 +3603,7 @@ private void runJob() throws Exception
     String msg = "Links-only mode - componentSource and copyTo are " +
       "both unset; running link phase only";
     setStatus("[" + now() + "] " + msg);
-    log.info("[ComponentCopier] " + msg);
+    log.message("[ComponentCopier] " + msg);
     writeToLog(msg);
   }
 
@@ -2976,13 +3654,13 @@ private void runJob() throws Exception
   {
     String detail = "ERROR: " + e.getMessage();
     setStatus("[" + now() + "] " + detail);
-    log.severe("[ComponentCopier] EXCEPTION - " + e.getMessage());
+    log.error("[ComponentCopier] EXCEPTION - " + e.getMessage());
     writeToLog("EXCEPTION - " + e.getMessage());
   }
 }
 
 public void onStop() throws Exception
 {
-  log.info("[ComponentCopier] Service stopped");
+  log.message("[ComponentCopier] Service stopped");
   writeToLog("Service stopped");
 }
