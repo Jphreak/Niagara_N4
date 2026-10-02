@@ -57,6 +57,22 @@ Changes
             ORIGINAL sibling (kept by keepAllLinks) has that link removed
             before the remapped link is added, so no input is fed twice.
             verify reports such a link as STALE; dryRun previews it.
+            All sources are now handled as ONE set per destination, like a
+            Workbench multi-select paste. After everything is copied, links
+            between any of the copied sources are made between the copies,
+            and copies still wired to the ORIGINALS are unlinked from them.
+            Existing links are matched by what they connect, not by name,
+            so a link the copy engine already remapped isn't duplicated.
+            With keepAllLinks false, links from outside the set are removed
+            from the copies. This replaces the flatten-only internal-link
+            pass and also covers the newCopy fallback engine. verify reports
+            FOUND / MISSING / STALE / EXTRA. The linker log and results CSV
+            now start with the run, so these rows are not archived away by
+            the links-CSV phase.
+         The deleteComponent (Reverse Changes) toggle is replaced by a
+         reverse action, like ForceRemove. Same behaviour; it can no
+         longer be left switched on. Slot sheet: delete deleteComponent,
+         add a "reverse" action. dryRun and verify always run forward.
 
 Inspiration
 -----------
@@ -94,6 +110,9 @@ Actions
   createSampleCsv   Write two starter CSV files (copy destinations +
                     links) at sampleCsvPath so the user can edit them
                     in place rather than guessing the format.
+  reverse           Undo a previous run with the same settings: removes
+                    the links listed in linksCsvPath FIRST, then the
+                    source-named components from each destination.
   cancel            Stop the current run after the in-flight row
                     finishes. Writes a RUN CANCELLED summary.
   pruneArchives     Apply the maxArchives limit to the log and
@@ -110,8 +129,8 @@ Key features
     folder's CONTENTS into the destination instead of the folder itself
     (no wrapper folder, matching pre-v3.0 behaviour), and recreates the
     folder's internal links at the destination afterward.
-  - deleteComponent toggle removes the source-named component from each
-    destination instead of copying
+  - reverse action undoes a previous run: removes the source-named
+    component from each destination (and the listed links first)
   - Optional post-copy link phase - if linksCsvPath is set, the program
     reads a 5-column links CSV (same format as LinkCreator) and creates
     the listed links after the copy phase finishes. The link phase writes
@@ -201,6 +220,9 @@ private static final String QUICK_GUIDE =
   "                      Makes no changes.\n" +
   "  Create Sample CSV - write starter CSV files (copy + links)\n" +
   "                      to sampleCsvPath. Edit them in place.\n" +
+  "  Reverse           - undo a previous run (same settings):\n" +
+  "                      removes the listed links, then the\n" +
+  "                      copied components. Not a preview.\n" +
   "  Cancel Run        - stop the current run cleanly after the\n" +
   "                      in-flight row finishes.\n" +
   "  Prune Old Archives- apply the maxArchives limit right now\n" +
@@ -239,16 +261,14 @@ private static final String QUICK_GUIDE =
   "    copy. Add \"*\" to a folder source line to flatten its\n" +
   "    contents instead (no wrapper folder) - internal links are\n" +
   "    recreated at the destination afterward either way.\n" +
-  "  - deleteComponent=true (Reverse Changes) UNDOES a previous\n" +
-  "    run: the link phase removes the listed links FIRST, then\n" +
-  "    the copy phase removes the source-named components from\n" +
-  "    each destination. dryRun previews reverse-mode too.\n" +
-  "  - verify ignores deleteComponent and dryRun toggles -\n" +
-  "    it only audits whether the named component exists.\n" +
+  "  - Reverse UNDOES a previous run: the link phase removes the\n" +
+  "    listed links FIRST, then the copy phase removes the\n" +
+  "    source-named components from each destination.\n" +
+  "  - verify only audits whether the named component exists.\n" +
   "  - Links-only mode: leave componentSource and copyTo\n" +
   "    unset and configure linksCsvPath. The copy phase is\n" +
   "    skipped and only the link CSV is processed (creates in\n" +
-  "    normal mode, removes in reverse mode). Useful when\n" +
+  "    execute, removes on Reverse). Useful when\n" +
   "    wiring up (or unwiring) pre-existing components.\n" +
   "  - Ords can use slot names as Workbench shows them, e.g.\n" +
   "    slot:/Drivers/BacnetNetwork/VAV B-31/points - spaces,\n" +
@@ -258,6 +278,9 @@ private static final String QUICK_GUIDE =
   "    or can't activate (bad slot, unresolved source, licence\n" +
   "    limit) is removed and reported as ERROR. verify reports a\n" +
   "    link that exists but doesn't work as BROKEN.\n" +
+  "  - All source lines are one SET per destination (like a\n" +
+  "    Workbench multi-select paste): links between them are\n" +
+  "    made between the copies, not back to the originals.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives\n" +
   "    are kept (default 10). 0 = keep all.";
 
@@ -733,16 +756,14 @@ private boolean isKeepAllLinks()
   return false;
 }
 
+// Set by onReverse() for the duration of that one invocation. Replaces
+// the old deleteComponent toggle slot, so reverse can never be left switched on
+// for the next execute.
+private boolean reverseActive = false;
+
 private boolean isDeleteMode()
 {
-  try
-  {
-    Object val = get("deleteComponent");
-    if (val instanceof javax.baja.sys.BBoolean)
-      return ((javax.baja.sys.BBoolean) val).getBoolean();
-  }
-  catch (Exception ignore) {}
-  return false;
+  return reverseActive;
 }
 
 private String resolveSampleCsvPath()
@@ -903,7 +924,7 @@ private boolean isFolderComponent(javax.baja.sys.BComponent c)
 // is copied separately, Niagara's link-remap can't see across those
 // calls, so links between siblings inside the folder are NOT
 // automatically preserved by copyTo() - the caller (see
-// processInternalLinks()) must capture and recreate them afterward.
+// runSetLinkPass()) makes them between the copies afterward.
 // flatten has no effect on a non-folder source - it always copies whole.
 private java.util.List expandSource(
   javax.baja.sys.BComponent src, boolean flatten)
@@ -968,13 +989,37 @@ private String strOf(Object o)
   try { return o.toString(); } catch (Throwable t) { return ""; }
 }
 
-// One internal link, captured as full slot paths + slot names under the
-// SOURCE folder (not yet remapped to the destination).
-// AX: carried as a String[4] (no inner classes in a Program object).
-private static final int IL_SRC_PATH = 0;
-private static final int IL_SRC_SLOT = 1;
-private static final int IL_TGT_PATH = 2;
-private static final int IL_TGT_SLOT = 3;
+// ======================================================
+// Copied-set link pass (v3.2-AX)
+// ======================================================
+// Workbench copies a multi-selection as ONE set: a link between two
+// selected components is remapped onto the two copies. This program
+// copies each source line (and each child of a FLATTEN folder) in its
+// own copy call, so the framework never sees them together and a link
+// between two sources arrives still wired to the ORIGINAL. And if this
+// station falls back to newCopy (see the "Copy engine:" log line), no
+// link is remapped at all. So after every source has been copied to a
+// destination, this pass treats all of them as one set ("roots") and,
+// per destination:
+//   - links INSIDE the set (both ends in copied sources): a copy still
+//     linked to the original is unlinked from it, and the link is made
+//     between the copies - unless an equivalent link (same source copy,
+//     same slots) is already there. Links are matched by what they
+//     connect, never by name, so a link the copy engine already remapped
+//     is not duplicated.
+//   - links from OUTSIDE the set: kept when keepAllLinks is true;
+//     removed from the copies when it is false (as a Workbench paste).
+// verify reports FOUND / MISSING / STALE / EXTRA and changes nothing;
+// dryRun previews (the copies don't exist yet). Skipped on reverse:
+// links held by the copies are deleted with them.
+
+// One captured link: String[6] (no inner classes - AX compatible).
+private static final int SL_SRC_PATH = 0;
+private static final int SL_SRC_SLOT = 1;
+private static final int SL_TGT_PATH = 2;
+private static final int SL_TGT_SLOT = 3;
+private static final int SL_SRC_ROOT = 4;   // root index, "-1" = outside the set
+private static final int SL_TGT_ROOT = 5;
 
 // Recursively collect every component in comp's subtree, comp included.
 private void collectSubtree(
@@ -988,224 +1033,339 @@ private void collectSubtree(
     collectSubtree(kids[i], out);
 }
 
-// Walk folder's whole subtree and capture every link whose source AND
-// target are both inside that subtree (an "internal" link). A BLink is
-// a child slot on its TARGET component, so getLinks() on each subtree
-// member returns that member's inbound links.
-private java.util.List captureInternalLinks(javax.baja.sys.BComponent folder)
+// Slot paths of the roots ("" if one can't be read).
+private String[] rootPathsOf(java.util.List roots)
 {
-  java.util.List out = new java.util.ArrayList();
-  String folderPath;
-  try { folderPath = folder.getSlotPath().toString(); }
-  catch (Throwable t) { return out; }
-  String folderPrefix = folderPath + "/";
-
-  java.util.List subtree = new java.util.ArrayList();
-  collectSubtree(folder, subtree);
-
-  for (int i = 0; i < subtree.size(); i++)
+  String[] out = new String[roots.size()];
+  for (int i = 0; i < out.length; i++)
   {
-    javax.baja.sys.BComponent tgtOwner =
-      (javax.baja.sys.BComponent) subtree.get(i);
-
-    javax.baja.sys.BLink[] links;
-    try { links = tgtOwner.getLinks(); }
-    catch (Throwable t) { continue; }
-
-    for (int j = 0; j < links.length; j++)
-    {
-      javax.baja.sys.BLink lk = links[j];
-      try
-      {
-        String targetSlot = strOf(invoke0(lk, "getTargetSlotName"));
-        String sourceSlot = strOf(invoke0(lk, "getSourceSlotName"));
-        if (sourceSlot.length() == 0 || targetSlot.length() == 0) continue;
-
-        javax.baja.sys.BComponent srcComp = null;
-        try
-        {
-          Object srcOrdObj = invoke0(lk, "getSourceOrd");
-          if (srcOrdObj instanceof javax.baja.naming.BOrd)
-          {
-            Object so = resolveOrd((javax.baja.naming.BOrd) srcOrdObj, tgtOwner);
-            if (so instanceof javax.baja.sys.BComponent)
-              srcComp = (javax.baja.sys.BComponent) so;
-          }
-        }
-        catch (Throwable ignore) {}
-        if (srcComp == null) continue;
-
-        String tgtPath = tgtOwner.getSlotPath().toString();
-        String srcPath = srcComp.getSlotPath().toString();
-
-        // Internal only: both ends inside the folder subtree (or on the
-        // folder itself, in the unlikely case a link touches it directly).
-        boolean srcInside = srcPath.equals(folderPath) || srcPath.startsWith(folderPrefix);
-        boolean tgtInside = tgtPath.equals(folderPath) || tgtPath.startsWith(folderPrefix);
-        if (!srcInside || !tgtInside) continue;
-
-        out.add(new String[]{ srcPath, sourceSlot, tgtPath, targetSlot });
-      }
-      catch (Throwable t)
-      {
-        writeToLog("INTERNAL LINK CAPTURE ERROR under " + folderPath + ": " +
-          describeException(t));
-      }
-    }
+    try { out[i] = ((javax.baja.sys.BComponent) roots.get(i)).getSlotPath().toString(); }
+    catch (Throwable t) { out[i] = ""; }
   }
-
   return out;
 }
 
-// Capture folder's internal links, remap each endpoint from under the
-// source folder to under the destination (string substitution -
-// copyTo() preserves each child's relative structure and name, so a
-// path under folderPath maps 1:1 to the same relative path under dst),
-// resolve both remapped endpoints at the destination, and recreate the
-// link via the same processLinkRow() the linksCsvPath phase uses. An
-// endpoint that fails to resolve at the destination (e.g. a SKIPPED
-// copy) is logged and that one link is skipped; the rest still run.
-// FLATTEN-mode clean-up (v3.2-AX): find links on the copied tgtComp
-// whose source is the ORIGINAL component at origSrcPath (srcSlot ->
-// tgtSlot) - the link keepAllLinks preserved - and remove it. verify
-// reports it as STALE, dryRun as "would remove"; nothing changes then.
-private void clearKeptInternalLinks(
-  javax.baja.sys.BComponent tgtComp, String origSrcPath,
-  String srcSlot, String tgtSlot)
+// Index of the root whose subtree holds path (most specific), or -1.
+private int rootOf(String path, String[] rootPaths)
 {
-  javax.baja.sys.BLink[] links;
-  try { links = tgtComp.getLinks(); }
-  catch (Throwable t) { return; }
+  int best = -1;
+  int bestLen = -1;
+  for (int i = 0; i < rootPaths.length; i++)
+  {
+    String r = rootPaths[i];
+    if (r.length() == 0) continue;
+    if ((path.equals(r) || path.startsWith(r + "/")) && r.length() > bestLen)
+    {
+      best = i;
+      bestLen = r.length();
+    }
+  }
+  return best;
+}
 
-  String tgtName = "?";
-  String tgtPath = "?";
+// Where the copy of path (under root rootPath, copied as rootName)
+// lives under dstPath.
+private String toDestPath(
+  String path, String rootPath, String rootName, String dstPath)
+{
+  String base = dstPath.endsWith("/") ? dstPath : dstPath + "/";
+  return base + rootName + path.substring(rootPath.length());
+}
+
+// Resolve a slot path to a component, or null. Accepts "slot:/a/b" (what
+// getSlotPath() gives) or a bare "/a/b".
+private javax.baja.sys.BComponent compAt(String path)
+{
+  if (path.startsWith("/")) path = "slot:" + path;
   try
   {
-    tgtName = tgtComp.getName();
-    tgtPath = tgtComp.getSlotPath().toString();
+    Object o = resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(path)));
+    if (o instanceof javax.baja.sys.BComponent) return (javax.baja.sys.BComponent) o;
   }
   catch (Throwable ignore) {}
+  return null;
+}
 
+// The component a link's source ord points at (resolved relative to the
+// link's owner), or null.
+private javax.baja.sys.BComponent linkSource(
+  javax.baja.sys.BLink link, javax.baja.sys.BComponent owner)
+{
+  try
+  {
+    Object srcOrdObj = invoke0(link, "getSourceOrd");
+    if (srcOrdObj instanceof javax.baja.naming.BOrd)
+    {
+      Object so = resolveOrd((javax.baja.naming.BOrd) srcOrdObj, owner);
+      if (so instanceof javax.baja.sys.BComponent) return (javax.baja.sys.BComponent) so;
+    }
+  }
+  catch (Throwable ignore) {}
+  return null;
+}
+
+// Every link held anywhere in the roots' subtrees, classified by
+// whether its source is inside the set. Duplicates collapse to one.
+private java.util.List captureSetLinks(java.util.List roots)
+{
+  java.util.List out = new java.util.ArrayList();
+  java.util.Set seen = new java.util.HashSet();
+  String[] rootPaths = rootPathsOf(roots);
+
+  for (int r = 0; r < roots.size(); r++)
+  {
+    java.util.List subtree = new java.util.ArrayList();
+    collectSubtree((javax.baja.sys.BComponent) roots.get(r), subtree);
+
+    for (int i = 0; i < subtree.size(); i++)
+    {
+      javax.baja.sys.BComponent owner = (javax.baja.sys.BComponent) subtree.get(i);
+      javax.baja.sys.BLink[] links;
+      try { links = owner.getLinks(); }
+      catch (Throwable t) { continue; }
+
+      for (int j = 0; j < links.length; j++)
+      {
+        try
+        {
+          String tgtSlot = strOf(invoke0(links[j], "getTargetSlotName"));
+          String srcSlot = strOf(invoke0(links[j], "getSourceSlotName"));
+          if (srcSlot.length() == 0 || tgtSlot.length() == 0) continue;
+
+          javax.baja.sys.BComponent src = linkSource(links[j], owner);
+          if (src == null) continue;
+
+          String srcPath = src.getSlotPath().toString();
+          String tgtPath = owner.getSlotPath().toString();
+          int tr = rootOf(tgtPath, rootPaths);
+          if (tr < 0) continue;
+          int sr = rootOf(srcPath, rootPaths);
+
+          String key = srcPath + "|" + srcSlot + "|" + tgtPath + "|" + tgtSlot;
+          if (!seen.add(key)) continue;
+          out.add(new String[]{ srcPath, srcSlot, tgtPath, tgtSlot,
+            String.valueOf(sr), String.valueOf(tr) });
+        }
+        catch (Throwable t)
+        {
+          writeToLinkerLog("SET LINK CAPTURE ERROR: " + describeException(t));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Links on tgt that come from the component at srcPath (slot srcSlot)
+// into tgt's slot tgtSlot.
+private java.util.List linksFrom(
+  javax.baja.sys.BComponent tgt, String srcPath, String srcSlot, String tgtSlot)
+{
+  java.util.List out = new java.util.ArrayList();
+  javax.baja.sys.BLink[] links;
+  try { links = tgt.getLinks(); }
+  catch (Throwable t) { return out; }
   for (int i = 0; i < links.length; i++)
   {
-    javax.baja.sys.BLink link = links[i];
     try
     {
-      if (!tgtSlot.equals(strOf(invoke0(link, "getTargetSlotName")))) continue;
-      if (!srcSlot.equals(strOf(invoke0(link, "getSourceSlotName")))) continue;
+      if (!tgtSlot.equals(strOf(invoke0(links[i], "getTargetSlotName")))) continue;
+      if (!srcSlot.equals(strOf(invoke0(links[i], "getSourceSlotName")))) continue;
+      javax.baja.sys.BComponent src = linkSource(links[i], tgt);
+      if (src != null && srcPath.equals(src.getSlotPath().toString()))
+        out.add(links[i]);
+    }
+    catch (Throwable ignore) {}
+  }
+  return out;
+}
 
-      javax.baja.sys.BComponent src = null;
-      Object srcOrdObj = invoke0(link, "getSourceOrd");
-      if (srcOrdObj instanceof javax.baja.naming.BOrd)
-      {
-        Object so = resolveOrd((javax.baja.naming.BOrd) srcOrdObj, tgtComp);
-        if (so instanceof javax.baja.sys.BComponent)
-          src = (javax.baja.sys.BComponent) so;
-      }
-      if (src == null) continue;
-      if (!origSrcPath.equals(src.getSlotPath().toString())) continue;
+// Unlink tgt from the component at srcPath. verify only reports it (as
+// verifyStatus). Returns how many links matched.
+private int unlinkFrom(
+  javax.baja.sys.BComponent tgt, String srcPath, String srcSlot,
+  String tgtSlot, String reason, String verifyStatus)
+{
+  java.util.List found = linksFrom(tgt, srcPath, srcSlot, tgtSlot);
+  String tgtName = "?";
+  String tgtPath = "?";
+  try { tgtName = tgt.getName(); tgtPath = tgt.getSlotPath().toString(); }
+  catch (Throwable ignore) {}
+  String srcName = srcPath.substring(srcPath.lastIndexOf('/') + 1);
 
-      javax.baja.sys.Property prop = link.getPropertyInParent();
-      String linkName = (prop == null) ? "?" : prop.getName();
-      String srcName = src.getName();
+  for (int i = 0; i < found.size(); i++)
+  {
+    javax.baja.sys.BLink link = (javax.baja.sys.BLink) found.get(i);
+    javax.baja.sys.Property prop = null;
+    try { prop = link.getPropertyInParent(); } catch (Throwable ignore) {}
+    String linkName = (prop == null) ? "?" : prop.getName();
 
-      if (isVerify())
-      {
-        writeToLinkerLog("INTERNAL LINK STALE: " + tgtPath + "[" + tgtSlot +
-          "] is still linked to the original " + origSrcPath + "[" + srcSlot + "]");
-        writeLinkerRow(srcName, origSrcPath, srcSlot, tgtName, tgtPath, tgtSlot,
-          "STALE", "Copy still linked to the original source (kept by keepAllLinks)",
-          "Verify", linkName, "0.000");
-      }
-      else if (isDryRun())
-      {
-        writeToLinkerLog("INTERNAL LINK DRYRUN: would remove link kept to the " +
-          "original " + origSrcPath + "[" + srcSlot + "] -> " + tgtPath + "[" + tgtSlot + "]");
-        writeLinkerRow(srcName, origSrcPath, srcSlot, tgtName, tgtPath, tgtSlot,
-          "DRYRUN", "Would remove link kept to the original source",
-          "Create", linkName, "0.000");
-      }
-      else if (prop != null)
-      {
-        tgtComp.remove(prop);
-        writeToLinkerLog("INTERNAL LINK CLEARED: removed link kept to the " +
-          "original " + origSrcPath + "[" + srcSlot + "] -> " + tgtPath + "[" + tgtSlot + "]");
-        writeLinkerRow(srcName, origSrcPath, srcSlot, tgtName, tgtPath, tgtSlot,
-          "REMOVED", "Removed link kept to the original source (flatten copy)",
-          "Create", linkName, "0.000");
-      }
+    if (isVerify())
+    {
+      writeToLinkerLog("SET LINK " + verifyStatus + ": " + srcPath + "[" + srcSlot +
+        "] -> " + tgtPath + "[" + tgtSlot + "] - " + reason);
+      writeLinkerRow(srcName, srcPath, srcSlot, tgtName, tgtPath, tgtSlot,
+        verifyStatus, reason, "Verify", linkName, "0.000");
+      continue;
+    }
+    try
+    {
+      if (prop != null) tgt.remove(prop);
+      writeToLinkerLog("SET LINK REMOVED: " + srcPath + "[" + srcSlot +
+        "] -> " + tgtPath + "[" + tgtSlot + "] - " + reason);
+      writeLinkerRow(srcName, srcPath, srcSlot, tgtName, tgtPath, tgtSlot,
+        "REMOVED", reason, "Create", linkName, "0.000");
     }
     catch (Throwable t)
     {
-      writeToLinkerLog("INTERNAL LINK CLEAR ERROR on " + tgtPath + ": " +
-        describeException(t));
+      writeToLinkerLog("SET LINK REMOVE ERROR on " + tgtPath + ": " + describeException(t));
+      writeLinkerRow(srcName, srcPath, srcSlot, tgtName, tgtPath, tgtSlot,
+        "ERROR", "Could not remove link - " + describeException(t),
+        "Create", linkName, "0.000");
     }
   }
+  return found.size();
 }
 
-private void processInternalLinks(
-  javax.baja.sys.BComponent folder, javax.baja.sys.BComponent dst)
+// Run the copied-set pass for every destination.
+private void runSetLinkPass(java.util.List roots, java.util.List dsts)
 {
-  String folderPath, dstPath;
-  try
+  if (roots.size() == 0 || dsts.size() == 0) return;
+  if (isDeleteMode() && !isVerify())
   {
-    folderPath = folder.getSlotPath().toString();
-    dstPath = dst.getSlotPath().toString();
-  }
-  catch (Throwable t)
-  {
-    writeToLog("INTERNAL LINKS ERROR: could not read source/destination path - " +
-      describeException(t));
+    writeToLinkerLog("Copied-set link pass skipped on reverse - links held " +
+      "by the copies are deleted with them");
     return;
   }
 
-  java.util.List links = captureInternalLinks(folder);
-  if (links.size() == 0) return;
+  java.util.List captured = captureSetLinks(roots);
+  int inside = 0;
+  for (int i = 0; i < captured.size(); i++)
+    if (!((String[]) captured.get(i))[SL_SRC_ROOT].equals("-1")) inside++;
+  writeToLinkerLog("--- Copied-set link pass: " + roots.size() +
+    " source(s) treated as one set; " + inside + " link(s) inside the set, " +
+    (captured.size() - inside) + " from outside (keepAllLinks=" +
+    isKeepAllLinks() + ") ---");
+  if (captured.size() == 0) return;
 
-  writeToLinkerLog("Internal links captured under '" + folderPath +
-    "': " + links.size() + " - remapping to '" + dstPath + "'" +
-    (isDeleteMode() && !isVerify() ? " (reverse)" : ""));
-
-  for (int i = 0; i < links.size(); i++)
+  for (int d = 0; d < dsts.size(); d++)
   {
-    String[] lk = (String[]) links.get(i);
-
-    String newSrcPath = dstPath + lk[IL_SRC_PATH].substring(folderPath.length());
-    String newTgtPath = dstPath + lk[IL_TGT_PATH].substring(folderPath.length());
-
-    javax.baja.sys.BComponent srcComp = null;
-    javax.baja.sys.BComponent tgtComp = null;
-    try
+    if (isCancelled())
     {
-      Object so = resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(newSrcPath)));
-      if (so instanceof javax.baja.sys.BComponent) srcComp = (javax.baja.sys.BComponent) so;
+      writeToLinkerLog("Copied-set link pass CANCELLED before destination " + (d + 1));
+      break;
     }
-    catch (Throwable ignore) {}
-    try
-    {
-      Object to = resolveOrd(javax.baja.naming.BOrd.make(normalizeOrd(newTgtPath)));
-      if (to instanceof javax.baja.sys.BComponent) tgtComp = (javax.baja.sys.BComponent) to;
-    }
-    catch (Throwable ignore) {}
+    setStatus("[" + now() + "] Copied-set links: destination " + (d + 1) +
+      " of " + dsts.size() + "...");
+    processSetLinks(roots, captured, (javax.baja.sys.BComponent) dsts.get(d));
+  }
+}
 
-    if (srcComp == null || tgtComp == null)
+// The copied-set pass for one destination.
+private void processSetLinks(
+  java.util.List roots, java.util.List captured, javax.baja.sys.BComponent dst)
+{
+  String dstPath;
+  try { dstPath = dst.getSlotPath().toString(); }
+  catch (Throwable t) { return; }
+
+  String[] rootPaths = rootPathsOf(roots);
+  String[] rootNames = new String[roots.size()];
+  for (int i = 0; i < rootNames.length; i++)
+  {
+    try { rootNames[i] = ((javax.baja.sys.BComponent) roots.get(i)).getName(); }
+    catch (Throwable t) { rootNames[i] = ""; }
+  }
+  boolean keepAll = isKeepAllLinks();
+
+  int linked = 0, present = 0, unlinked = 0, outside = 0, missing = 0;
+  int errors = 0, skipped = 0, previewed = 0;
+
+  for (int i = 0; i < captured.size(); i++)
+  {
+    if (isCancelled()) break;
+    String[] lk = (String[]) captured.get(i);
+    int sr = Integer.parseInt(lk[SL_SRC_ROOT]);
+    int tr = Integer.parseInt(lk[SL_TGT_ROOT]);
+    String srcSlot = lk[SL_SRC_SLOT];
+    String tgtSlot = lk[SL_TGT_SLOT];
+    String newTgtPath = toDestPath(lk[SL_TGT_PATH], rootPaths[tr], rootNames[tr], dstPath);
+
+    // ---- link from OUTSIDE the set ----
+    if (sr < 0)
     {
-      writeToLinkerLog("INTERNAL LINK SKIPPED: could not resolve at destination - " +
-        newSrcPath + "[" + lk[IL_SRC_SLOT] + "] -> " + newTgtPath + "[" + lk[IL_TGT_SLOT] + "]");
+      if (keepAll) continue;
+      if (isDryRun()) { previewed++; continue; }
+      javax.baja.sys.BComponent nTgt = compAt(newTgtPath);
+      if (nTgt == null) continue;
+      outside += unlinkFrom(nTgt, lk[SL_SRC_PATH], srcSlot, tgtSlot,
+        "Incoming link from outside the copied set (keepAllLinks is false)",
+        "EXTRA");
       continue;
     }
 
-    // v3.2: each FLATTEN child is copied in its own Mark call, so a link
-    // from a sibling is outside that call's handle map. With keepAllLinks
-    // the copy arrives still linked to the ORIGINAL sibling. Clear that
-    // kept link first, or the input ends up fed by two live links.
-    // (Not in reverse: the copies are about to be deleted anyway.)
-    if (!(isDeleteMode() && !isVerify()))
-      clearKeptInternalLinks(tgtComp, lk[IL_SRC_PATH], lk[IL_SRC_SLOT],
-        lk[IL_TGT_SLOT]);
+    // ---- link INSIDE the set ----
+    String newSrcPath = toDestPath(lk[SL_SRC_PATH], rootPaths[sr], rootNames[sr], dstPath);
+    if (isDryRun())
+    {
+      previewed++;
+      writeToLinkerLog("SET LINK DRYRUN: would link the copies " + newSrcPath +
+        "[" + srcSlot + "] -> " + newTgtPath + "[" + tgtSlot + "]");
+      writeLinkerRow(rootNames[sr], newSrcPath, srcSlot, rootNames[tr], newTgtPath,
+        tgtSlot, "DRYRUN", "Would link the copies (link inside the copied set)",
+        "Create", "", "0.000");
+      continue;
+    }
 
-    processLinkRow(srcComp, lk[IL_SRC_SLOT], tgtComp, lk[IL_TGT_SLOT]);
+    javax.baja.sys.BComponent nSrc = compAt(newSrcPath);
+    javax.baja.sys.BComponent nTgt = compAt(newTgtPath);
+    if (nSrc == null || nTgt == null)
+    {
+      skipped++;
+      writeToLinkerLog("SET LINK SKIPPED: copy not found at destination - " +
+        newSrcPath + "[" + srcSlot + "] -> " + newTgtPath + "[" + tgtSlot + "]");
+      writeLinkerRow(rootNames[sr], newSrcPath, srcSlot, rootNames[tr], newTgtPath,
+        tgtSlot, "SKIPPED", "Copy not found at destination",
+        isVerify() ? "Verify" : "Create", "", "0.000");
+      continue;
+    }
+
+    // 1) unlink the copy from the ORIGINAL source
+    unlinked += unlinkFrom(nTgt, lk[SL_SRC_PATH], srcSlot, tgtSlot,
+      "Copy still linked to the original source", "STALE");
+
+    // 2) already linked between the copies?
+    String nSrcPath = newSrcPath;
+    try { nSrcPath = nSrc.getSlotPath().toString(); } catch (Throwable ignore) {}
+    if (linksFrom(nTgt, nSrcPath, srcSlot, tgtSlot).size() > 0)
+    {
+      present++;
+      writeToLinkerLog("SET LINK OK: already linked between the copies - " +
+        nSrcPath + "[" + srcSlot + "] -> " + newTgtPath + "[" + tgtSlot + "]");
+      if (isVerify())
+        writeLinkerRow(nSrc.getName(), nSrcPath, srcSlot, nTgt.getName(),
+          newTgtPath, tgtSlot, "FOUND", "Linked between the copies",
+          "Verify", "", "0.000");
+      continue;
+    }
+
+    // 3) make it (verify reports MISSING; link checks apply)
+    String r = processLinkRow(nSrc, srcSlot, nTgt, tgtSlot);
+    if (r.equals("LINKED")) linked++;
+    else if (r.equals("MISSING")) missing++;
+    else if (r.equals("ERROR")) errors++;
   }
+
+  String summary = "Copied-set links at " + dstPath + " - " +
+    (isDryRun() ? "Previewed:" + previewed :
+     isVerify() ? "Present:" + present + " Missing:" + missing +
+                  " Stale:" + unlinked + " Extra:" + outside :
+                  "Linked:" + linked + " AlreadyLinked:" + present +
+                  " UnlinkedFromOriginal:" + unlinked +
+                  " OutsideRemoved:" + outside) +
+    " Skipped:" + skipped + " Errors:" + errors;
+  writeToLinkerLog(summary);
+  writeToLog(summary);
 }
 
 // Read the maxArchives slot. Returns 10 if the slot is missing or
@@ -2662,7 +2822,7 @@ private String processLinkRow(
       return "MISSING";
     }
 
-    // ---- REVERSE (deleteComponent=true): remove the listed link ----
+    // ---- REVERSE (reverse action): remove the listed link ----
     if (isDeleteMode())
     {
       if (tgtComp.getSlot(linkName) == null)
@@ -2802,8 +2962,8 @@ private void executeLinksCsv(String linksCsvPath)
   // v2.06: the link phase writes to its OWN log + results CSV. Archive
   // the previous run's linker files and start a fresh linker results CSV
   // with a header before any rows are written.
-  archiveLinkerLogFile();
-  initLinkerResultsCsv();
+  // v3.2: linker log/results are now started in runJob(), because the
+  // copied-set link pass writes to them before this phase runs.
 
   // Leave a pointer in the main (copy-phase) log so an operator looking
   // there knows where the link detail went.
@@ -3035,7 +3195,7 @@ private void executeDirect(long runStart) throws Exception
   writeToLog("Mode: DIRECT" +
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
   log.message("[ComponentCopier] Mode: DIRECT");
 
   javax.baja.naming.BOrd dstOrd = getCopyTo();
@@ -3062,6 +3222,10 @@ private void executeDirect(long runStart) throws Exception
     " | Destination: " + dst.getName());
 
   int[] counts = new int[5];
+
+  // v3.2: every copied item, so links between sources can be handled
+  // as one set once all are copied (see runSetLinkPass).
+  java.util.List setRoots = new java.util.ArrayList();
   for (int s = 0; s < sourceOrds.size(); s++)
   {
     String srcOrdStrRaw = (String) sourceOrds.get(s);
@@ -3078,8 +3242,7 @@ private void executeDirect(long runStart) throws Exception
           ? "flattening into its contents (internal links recreated after copy)"
           : "copying as a single unit (full subtree, internal links preserved)"));
 
-    boolean reverse = isDeleteMode() && !isVerify();
-    if (flattenFolder && reverse) processInternalLinks(src, dst);
+    setRoots.addAll(toCopy);
 
     for (int c = 0; c < toCopy.size(); c++)
     {
@@ -3092,9 +3255,12 @@ private void executeDirect(long runStart) throws Exception
         : processCopy(item, dst, "Direct");
       countResult(counts, result);
     }
-
-    if (flattenFolder && !reverse) processInternalLinks(src, dst);
   }
+
+  // v3.2: links between the copied sources, handled as one set.
+  java.util.List setDsts = new java.util.ArrayList();
+  setDsts.add(dst);
+  if (!isCancelled()) runSetLinkPass(setRoots, setDsts);
 
   long totalMs = (System.currentTimeMillis() - runStart);
   String summary = buildSummary("Direct", counts, totalMs);
@@ -3112,7 +3278,7 @@ private void executeBQL(long runStart) throws Exception
   writeToLog("Mode: BQL" +
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
   log.message("[ComponentCopier] Mode: BQL");
 
   javax.baja.naming.BOrd dstOrd = getCopyTo();
@@ -3145,6 +3311,10 @@ private void executeBQL(long runStart) throws Exception
   java.util.List destinations = new java.util.ArrayList();
   int[] counts = new int[5];
 
+  // v3.2: every copied item, so links between sources can be handled
+  // as one set once all are copied (see runSetLinkPass).
+  java.util.List setRoots = new java.util.ArrayList();
+
   // AX: read through BICollection / Cursor (see readBqlComponents).
   // Non-component rows are counted as Skipped, as in the N4 build.
   int[] bqlBad = new int[1];
@@ -3176,7 +3346,7 @@ private void executeBQL(long runStart) throws Exception
           ? "flattening into its contents (internal links recreated after copy)"
           : "copying as a single unit (full subtree, internal links preserved)"));
 
-    boolean reverse = isDeleteMode() && !isVerify();
+    setRoots.addAll(toCopy);
 
     for (int d = 0; d < destinations.size(); d++)
     {
@@ -3191,8 +3361,6 @@ private void executeBQL(long runStart) throws Exception
 
       javax.baja.sys.BComponent dst =
         (javax.baja.sys.BComponent) destinations.get(d);
-
-      if (flattenFolder && reverse) processInternalLinks(src, dst);
 
       for (int c = 0; c < toCopy.size(); c++)
       {
@@ -3217,10 +3385,11 @@ private void executeBQL(long runStart) throws Exception
             describeException(e));
         }
       }
-
-      if (flattenFolder && !reverse) processInternalLinks(src, dst);
     }
   }
+
+  // v3.2: links between the copied sources, handled as one set.
+  if (!isCancelled()) runSetLinkPass(setRoots, destinations);
 
   long totalMs = (System.currentTimeMillis() - runStart);
   String summary = buildSummary("BQL", counts, totalMs);
@@ -3239,7 +3408,7 @@ private void executeCSV(long runStart) throws Exception
   writeToLog("Mode: CSV" +
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
   log.message("[ComponentCopier] Mode: CSV");
 
   javax.baja.naming.BOrd csvOrd = resolveCsvOrd();
@@ -3271,6 +3440,10 @@ private void executeCSV(long runStart) throws Exception
   // ----------------------------------------------------
   java.util.List destinations = new java.util.ArrayList();
   int[] counts = new int[5];
+
+  // v3.2: every copied item, so links between sources can be handled
+  // as one set once all are copied (see runSetLinkPass).
+  java.util.List setRoots = new java.util.ArrayList();
 
   javax.baja.file.BIFile csvFile =
     (javax.baja.file.BIFile) resolveOrd(csvOrd);
@@ -3388,7 +3561,7 @@ private void executeCSV(long runStart) throws Exception
           ? "flattening into its contents (internal links recreated after copy)"
           : "copying as a single unit (full subtree, internal links preserved)"));
 
-    boolean reverse = isDeleteMode() && !isVerify();
+    setRoots.addAll(toCopy);
 
     for (int d = 0; d < destinations.size(); d++)
     {
@@ -3403,8 +3576,6 @@ private void executeCSV(long runStart) throws Exception
 
       javax.baja.sys.BComponent dst =
         (javax.baja.sys.BComponent) destinations.get(d);
-
-      if (flattenFolder && reverse) processInternalLinks(src, dst);
 
       for (int c = 0; c < toCopy.size(); c++)
       {
@@ -3429,10 +3600,11 @@ private void executeCSV(long runStart) throws Exception
             describeException(e));
         }
       }
-
-      if (flattenFolder && !reverse) processInternalLinks(src, dst);
     }
   }
+
+  // v3.2: links between the copied sources, handled as one set.
+  if (!isCancelled()) runSetLinkPass(setRoots, destinations);
 
   long totalMs = (System.currentTimeMillis() - runStart);
   String summary = buildSummary("CSV", counts, totalMs);
@@ -3457,6 +3629,7 @@ public void onExecute() throws Exception
 {
   dryRunActive = false;
   verifyActive = false;
+  reverseActive = false;
   cancelRequested = false;
   runJob();
 }
@@ -3465,6 +3638,7 @@ public void onDryRun() throws Exception
 {
   dryRunActive = true;
   verifyActive = false;
+  reverseActive = false;
   cancelRequested = false;
   try { runJob(); }
   finally { dryRunActive = false; }
@@ -3478,9 +3652,25 @@ public void onVerify() throws Exception
   // the duration of this invocation.
   dryRunActive = false;
   verifyActive = true;
+  reverseActive = false;
   cancelRequested = false;
   try { runJob(); }
   finally { verifyActive = false; }
+}
+
+// Undo a previous run, using the same settings as execute (replaces the
+// old deleteComponent toggle). Runs in reverse order:
+// the links listed in linksCsvPath are removed FIRST, then the
+// source-named components are removed from each destination.
+// Always a real run: dryRun and verify only ever run forward.
+public void onReverse() throws Exception
+{
+  dryRunActive = false;
+  verifyActive = false;
+  reverseActive = true;
+  cancelRequested = false;
+  try { runJob(); }
+  finally { reverseActive = false; }
 }
 
 // Set the cancel flag. The currently running BQL / CSV row loop will
@@ -3555,15 +3745,18 @@ private void runJob() throws Exception
 
   archiveLogFile();
   initResultsCsv();
+  archiveLinkerLogFile();
+  initLinkerResultsCsv();
 
-  String trigger = isVerify() ? "onVerify"
-                  : isDryRun() ? "onDryRun"
-                               : "onExecute";
+  String trigger = isVerify()     ? "onVerify"
+                  : isDryRun()     ? "onDryRun"
+                  : isDeleteMode() ? "onReverse"
+                                   : "onExecute";
   log.message("[ComponentCopier] " + trigger + " triggered");
   writeToLog(VERSION + " " + trigger + " triggered" +
     (isVerify()  ? " [VERIFY]"   : "") +
     (isDryRun()  ? " [DRY RUN]"  : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE MODE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
 
   // ----------------------------------------------------
   // Links-only detection
