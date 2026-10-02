@@ -46,6 +46,10 @@ Changes
             fault-flagged it, it is removed and the row is ERROR instead of
             LINKED. verify reports a link that exists but does not work as
             BROKEN (counted in Errors) instead of FOUND.
+         The deleteLinks toggle is replaced by a reverse action, like
+         ForceRemove. Same behaviour; it can no longer be left switched
+         on. Slot sheet: delete deleteLinks, add a "reverse" action.
+         dryRun and verify always run forward.
 
 Purpose
 -------
@@ -69,6 +73,8 @@ Actions
   createSampleCsv   Write a starter CSV file to sampleCsvPath so the
                     user can edit it in place rather than guessing
                     the format.
+  reverse           Undo a previous run with the same settings: removes
+                    the links this configuration would create.
   cancel            Stop the current run after the in-flight row
                     finishes. Writes a RUN CANCELLED summary.
   pruneArchives     Apply the maxArchives limit to the log and
@@ -153,6 +159,8 @@ private static final String QUICK_GUIDE =
   "  Verify            - confirm expected links exist\n" +
   "  Create Sample CSV - write a starter CSV to sampleCsvPath.\n" +
   "                      Edit it in place.\n" +
+  "  Reverse           - undo a previous run (same settings):\n" +
+  "                      removes the links. Not a preview.\n" +
   "  Cancel Run        - stop the current run cleanly after the\n" +
   "                      in-flight row finishes.\n" +
   "  Prune Old Archives- apply the maxArchives limit right now\n" +
@@ -185,8 +193,7 @@ private static final String QUICK_GUIDE =
   "    slot:/Drivers/BacnetNetwork/VAV B-31/IconFolder - spaces,\n" +
   "    dashes etc. are escaped automatically ($20, $2d). Already-\n" +
   "    escaped names are left as they are.\n" +
-  "  - set deleteLinks=true to remove links instead of\n" +
-  "    creating them. Dry Run previews delete-mode as well.\n" +
+  "  - Reverse removes the links instead of creating them.\n" +
   "  - Every link is checked: both slots must exist before it is\n" +
   "    added, and it is read back after. A link the framework drops\n" +
   "    or can't activate (bad slot, unresolved source, licence\n" +
@@ -569,16 +576,14 @@ private boolean isVerify()
   return verifyActive;
 }
 
+// Set by onReverse() for the duration of that one invocation. Replaces
+// the old deleteLinks toggle slot, so reverse can never be left switched on
+// for the next execute.
+private boolean reverseActive = false;
+
 private boolean isDeleteMode()
 {
-  try
-  {
-    Object val = get("deleteLinks");
-    if (val instanceof javax.baja.sys.BBoolean)
-      return ((javax.baja.sys.BBoolean) val).getBoolean();
-  }
-  catch (Exception ignore) {}
-  return false;
+  return reverseActive;
 }
 
 private String resolveSampleCsvPath()
@@ -1804,7 +1809,7 @@ private void executeDirect(long runStart) throws Exception
   writeToLog("Mode: DIRECT" +
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
   log.message("[LinkCreator] Mode: DIRECT");
 
   javax.baja.naming.BOrd tgtOrd = getTargetOrd();
@@ -1861,7 +1866,7 @@ private void executeBQL(long runStart) throws Exception
   writeToLog("Mode: BQL" +
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
   log.message("[LinkCreator] Mode: BQL");
 
   javax.baja.naming.BOrd tgtOrd = getTargetOrd();
@@ -2028,7 +2033,7 @@ private void executeCSV(long runStart) throws Exception
   writeToLog("Mode: CSV" +
     (isVerify()  ? " [VERIFY]"  : "") +
     (isDryRun()  ? " [DRY RUN]" : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
   log.message("[LinkCreator] Mode: CSV");
 
   javax.baja.naming.BOrd csvOrd = resolveCsvOrd();
@@ -2286,6 +2291,7 @@ public void onExecute() throws Exception
 {
   dryRunActive = false;
   verifyActive = false;
+  reverseActive = false;
   cancelRequested = false;
   runJob();
 }
@@ -2294,6 +2300,7 @@ public void onDryRun() throws Exception
 {
   dryRunActive = true;
   verifyActive = false;
+  reverseActive = false;
   cancelRequested = false;
   try { runJob(); }
   finally { dryRunActive = false; }
@@ -2309,9 +2316,24 @@ public void onVerify() throws Exception
 {
   dryRunActive = false;
   verifyActive = true;
+  reverseActive = false;
   cancelRequested = false;
   try { runJob(); }
   finally { verifyActive = false; }
+}
+
+// Undo a previous run, using the same settings as execute (replaces the
+// old deleteLinks toggle). Removes the links this
+// configuration would create (Direct / BQL / CSV).
+// Always a real run: dryRun and verify only ever run forward.
+public void onReverse() throws Exception
+{
+  dryRunActive = false;
+  verifyActive = false;
+  reverseActive = true;
+  cancelRequested = false;
+  try { runJob(); }
+  finally { reverseActive = false; }
 }
 
 private void runJob() throws Exception
@@ -2321,14 +2343,15 @@ private void runJob() throws Exception
   archiveLogFile();
   initResultsCsv();
 
-  String trigger = isVerify() ? "onVerify"
-                  : isDryRun() ? "onDryRun"
-                               : "onExecute";
+  String trigger = isVerify()     ? "onVerify"
+                  : isDryRun()     ? "onDryRun"
+                  : isDeleteMode() ? "onReverse"
+                                   : "onExecute";
   log.message("[LinkCreator] " + trigger + " triggered");
   writeToLog(VERSION + " " + trigger + " triggered" +
     (isVerify()  ? " [VERIFY]"   : "") +
     (isDryRun()  ? " [DRY RUN]"  : "") +
-    (isDeleteMode() && !isVerify() ? " [DELETE MODE]" : ""));
+    (isDeleteMode() && !isVerify() ? " [REVERSE]" : ""));
 
   int mode = getModeOrdinal();
   writeToLog("Operation mode: " + mode +
