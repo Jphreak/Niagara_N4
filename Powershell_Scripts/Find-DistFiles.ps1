@@ -7,7 +7,7 @@ param(
     [string]$OutFile = "$PSScriptRoot\DistFileDates.csv"
 )
 
-$pattern = Join-Path $Root "provisioningNiagara\stationData\*\backups\backup_IO_B*.dist"
+$pattern = Join-Path $Root "provisioningNiagara\stationData\*\backups\backup_*.dist"
 
 Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue |
     Select-Object @{n='Station';  e={ $_.Directory.Parent.Name }},
