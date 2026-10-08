@@ -1,5 +1,5 @@
 # Find-DistFiles.ps1
-# Lists backup_IO_B*.dist files under <Root>\provisioningNiagara\stationData\<station>\backups
+# Lists backup_*.dist files under <Root>\provisioningNiagara\stationData\<station>\backups
 # with created/modified dates to a CSV.
 # Usage: .\Find-DistFiles.ps1 -Root "C:\Some\Folder" -OutFile "C:\temp\dist_dates.csv"
 param(
