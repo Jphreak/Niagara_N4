@@ -16,3 +16,9 @@ Linker v3.2 (Direct, BQL, CSV)
 *** Note The above 2 programs also have the ability to reverse the others' linking ***
 
 
+
+ApiClient v0.01Alpha (HTTP/REST JSON client) - untested alpha
+- GET / POST / PUT / DELETE / PATCH / HEAD with None, Basic or Bearer auth
+- Built-in JSON parser with 10 path-selected outputs (num + str each)
+- Request chaining through var1..var4 (login -> token -> data)
+- Slot sheet and imports: N4_Versions/ApiClient_0.01Alpha_SlotSheet.txt
