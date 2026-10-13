@@ -21,4 +21,4 @@ ApiClient v0.01Alpha (HTTP/REST JSON client) - untested alpha
 - GET / POST / PUT / DELETE / PATCH / HEAD with None, Basic or Bearer auth
 - Built-in JSON parser with 10 path-selected outputs (num + str each)
 - Request chaining through var1..var4 (login -> token -> data)
-- Slot sheet and imports: N4_Versions/ApiClient_0.01Alpha_SlotSheet.txt
+- Slot sheet and imports: Testing/ApiClient_0.01Alpha_SlotSheet.txt
