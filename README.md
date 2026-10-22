@@ -15,6 +15,11 @@ Linker v3.2 (Direct, BQL, CSV)
 
 *** Note The above 2 programs also have the ability to reverse the others' linking ***
 
+Zone Temp Delta v1.00
+- out = zoneTemp - zoneTempSp (positive = above setpoint)
+- pointStatus faults if either input is fault, down, stale, disabled or null
+- Executes on change of either input
+
 
 
 

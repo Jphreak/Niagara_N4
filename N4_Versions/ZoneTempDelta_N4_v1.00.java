@@ -2,25 +2,20 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.03
+Version: v1.00
 Date:    2026-10-22
 
 Changes
 -------
   v1.00  Initial release.
-  v1.01  Added status output (StatusBoolean). Fault if either input
-         is not ok; ok otherwise.
-  v1.02  Renamed status output to pointStatus.
-  v1.03  Self-clear: both outputs are rewritten as whole new values on
-         every run (no in-place edits, no early return), and on start.
-         A copied block no longer keeps the source block's fault.
 
 Purpose
 -------
 out = zoneTemp - zoneTempSp
   Positive -> zone is above setpoint.
   Negative -> zone is below setpoint.
-Runs on change of either input, and once on start. No logging.
+pointStatus flags a bad input. Runs on change of either input, and once
+on start. No logging.
 
 Outputs
 -------
@@ -29,7 +24,11 @@ Outputs
   Either input bad   -> out         = 0, status null
                         pointStatus = true, status fault
   Bad = fault, down, stale, disabled, null, or slot missing/unlinked.
-  Overridden and alarm/unackedAlarm flags are NOT treated as bad.
+  A flag set alongside good flags still counts (overridden + stale = bad).
+  Overridden and alarm/unackedAlarm flags alone are NOT treated as bad.
+
+  Both outputs are rewritten as whole new values on every run, so a
+  copied block never keeps the source block's state.
 
 Imports
 -------
@@ -39,15 +38,22 @@ Slot Sheet
 ----------
   Name         Type                 Flags / Config
   -----------  -------------------  ------------------------------
-  zoneTemp     baja:StatusNumeric   Summary, Execute On Change
-  zoneTempSp   baja:StatusNumeric   Summary, Execute On Change
+  zoneTemp     baja:StatusNumeric   Summary, Execute On Change,
+                                    default status null
+  zoneTempSp   baja:StatusNumeric   Summary, Execute On Change,
+                                    default status null
   out          baja:StatusNumeric   Summary, Read Only
-  pointStatus  baja:StatusBoolean   Summary, Read Only
+  pointStatus  baja:StatusBoolean   Summary, Read Only,
+                                    facets trueText=" " falseText="Ok"
+  version      baja:String          Read Only
 ================================================================================
 */
 
+private static final String VERSION = "v1.00";
+
 public void onStart() throws Exception
 {
+  setVersion(VERSION);
   onExecute();
 }
 
