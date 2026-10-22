@@ -2,7 +2,7 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.02
+Version: v1.03
 Date:    2026-10-22
 
 Changes
@@ -11,13 +11,16 @@ Changes
   v1.01  Added status output (StatusBoolean). Fault if either input
          is not ok; ok otherwise.
   v1.02  Renamed status output to pointStatus.
+  v1.03  Self-clear: both outputs are rewritten as whole new values on
+         every run (no in-place edits, no early return), and on start.
+         A copied block no longer keeps the source block's fault.
 
 Purpose
 -------
 out = zoneTemp - zoneTempSp
   Positive -> zone is above setpoint.
   Negative -> zone is below setpoint.
-Runs on change of either input. No logging.
+Runs on change of either input, and once on start. No logging.
 
 Outputs
 -------
@@ -26,7 +29,7 @@ Outputs
   Either input bad   -> out         = 0, status null
                         pointStatus = true, status fault
   Bad = fault, down, stale, disabled, null, or slot missing/unlinked.
-  Overridden and alarm flags on an input are NOT treated as bad.
+  Overridden and alarm/unackedAlarm flags are NOT treated as bad.
 
 Imports
 -------
@@ -52,8 +55,6 @@ public void onExecute() throws Exception
 {
   BStatusNumeric zt = getZoneTemp();
   BStatusNumeric sp = getZoneTempSp();
-  BStatusNumeric o  = getOut();
-  BStatusBoolean st = getPointStatus();
 
   boolean bad = zt == null || sp == null
              || !zt.getStatus().isValid()
@@ -61,17 +62,14 @@ public void onExecute() throws Exception
 
   if (bad)
   {
-    o.setValue(0);
-    o.setStatus(BStatus.nullStatus);
-    st.setValue(true);
-    st.setStatus(BStatus.fault);
-    return;
+    setOut(new BStatusNumeric(0, BStatus.nullStatus));
+    setPointStatus(new BStatusBoolean(true, BStatus.fault));
   }
-
-  o.setValue(zt.getValue() - sp.getValue());
-  o.setStatus(BStatus.ok);
-  st.setValue(false);
-  st.setStatus(BStatus.ok);
+  else
+  {
+    setOut(new BStatusNumeric(zt.getValue() - sp.getValue(), BStatus.ok));
+    setPointStatus(new BStatusBoolean(false, BStatus.ok));
+  }
 }
 
 public void onStop() throws Exception
