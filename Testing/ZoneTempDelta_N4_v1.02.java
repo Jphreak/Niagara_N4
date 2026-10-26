@@ -2,7 +2,7 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.01
+Version: v1.02
 Date:    2026-10-26
 
 Changes
@@ -13,6 +13,8 @@ Changes
          "folder" in its name (any case) is skipped, so a block nested in
          e.g. B90009_VAV_117/B90009_VAV_117_Folder_2 still reports
          B90009_VAV_117.
+  v1.02  equipName drops the building prefix (B + digits + "_"):
+         B90009_VAV_117 -> VAV_117.
 
 Purpose
 -------
@@ -37,15 +39,16 @@ Outputs
 
   equipName  Walks up the block's slot path from its parent folder and
              returns the first folder name that does not contain
-             "folder". Escaped names are shown as Workbench displays
+             "folder", with a leading building prefix (B + digits +
+             "_", e.g. "B90009_") removed. Escaped names are shown as Workbench displays
              them ($20 -> space, $2d -> -). Re-evaluated every run, so a
              copied or moved block picks up its new location. Empty if
              no qualifying folder is found.
 
   Examples
-    .../VAV/B90009_VAV_102/zoneTempDelta                  -> B90009_VAV_102
+    .../VAV/B90009_VAV_102/zoneTempDelta                  -> VAV_102
     .../VAV/B90009_VAV_117/B90009_VAV_117_Folder_2/zoneTempDelta
-                                                          -> B90009_VAV_117
+                                                          -> VAV_117
 
 Imports
 -------
@@ -67,7 +70,7 @@ Slot Sheet
 ================================================================================
 */
 
-private static final String VERSION = "v1.01";
+private static final String VERSION = "v1.02";
 
 public void onStart() throws Exception
 {
@@ -118,7 +121,8 @@ private void updateEquipName()
 // Path of this block, e.g.
 //   /Drivers/.../VAV/B90009_VAV_117/B90009_VAV_117_Folder_2/zoneTempDelta
 // The last segment is the block itself. Walk back from its parent and
-// return the first segment that isn't a "folder".
+// return the first segment that isn't a "folder", minus its building
+// prefix.
 private String findEquipName()
 {
   String path;
@@ -143,9 +147,17 @@ private String findEquipName()
     if (s == null || s.length() == 0) continue;
     String n = unescapeName(s);
     if (n.toLowerCase().indexOf("folder") >= 0) continue;
-    return n;
+    return stripBuilding(n);
   }
   return "";
+}
+
+// "B90009_VAV_117" -> "VAV_117". Only strips B + digits + "_" at the
+// start; a name that would end up empty is returned unchanged.
+private String stripBuilding(String n)
+{
+  String t = n.replaceFirst("^[Bb][0-9]+_", "");
+  return t.length() > 0 ? t : n;
 }
 
 // "VAV$20B$2d31" -> "VAV B-31". Handles $xx and $uxxxx. Bad sequences
