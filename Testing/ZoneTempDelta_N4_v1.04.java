@@ -2,7 +2,7 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.03
+Version: v1.04
 Date:    2026-10-27
 
 Changes
@@ -18,6 +18,9 @@ Changes
          plus the sub-folder's number:
          VAV_117/VAV_117_Folder_2 -> "VAV_117 (2)".
          Replaces the v1.01 "folder"-in-the-name rule.
+  v1.04  Compile fix: point check no longer references
+         javax.baja.control (control-rt not on the Program classpath).
+         Uses the registered type "control:ControlPoint" instead.
 
 Purpose
 -------
@@ -81,7 +84,7 @@ Slot Sheet
 ================================================================================
 */
 
-private static final String VERSION = "v1.03";
+private static final String VERSION = "v1.04";
 
 public void onStart() throws Exception
 {
@@ -170,14 +173,16 @@ private String findEquipName()
   return "";
 }
 
-// True if any direct child of c is a control point.
+// True if any direct child of c is a control point. Looks the type up
+// by name so no control-rt import is needed.
 private boolean hasPoints(javax.baja.sys.BComponent c)
 {
   try
   {
+    javax.baja.sys.Type cp = javax.baja.sys.Sys.getType("control:ControlPoint");
     javax.baja.sys.BComponent[] kids = c.getChildComponents();
     for (int i = 0; i < kids.length; i++)
-      if (kids[i] instanceof javax.baja.control.BControlPoint) return true;
+      if (kids[i].getType().is(cp)) return true;
   }
   catch (Throwable ignore) {}
   return false;
