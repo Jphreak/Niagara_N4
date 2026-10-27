@@ -65,8 +65,9 @@ Outputs
   Examples
     .../VAV/BXXXXX_VAV_201/zoneTempDelta
         equipName VAV_201,        buildingNum BXXXXX
-    .../VAV/BXXXXX_VAV_301/BXXXXX_VAV_301_Folder_2/zoneTempDelta
-        equipName VAV_301 (2),    buildingNum BXXXXX
+    .../VAV/BXXXXX_VAV_301/BYYYYY_VAV_301_Folder_2/zoneTempDelta
+        equipName VAV_301 (2),    buildingNum BXXXXX (from the equipment,
+                                  not the sub-folder)
     .../BXXXXX_1234Lakeontario/OT_BXXXXX_01/points/VAV/VAV_5/zoneTempDelta
         equipName VAV_5,          buildingNum BXXXXX (from the path)
 
