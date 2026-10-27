@@ -2,7 +2,7 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.04
+Version: v1.05
 Date:    2026-10-27
 
 Changes
@@ -20,7 +20,12 @@ Changes
          Replaces the v1.01 "folder"-in-the-name rule.
   v1.04  Compile fix: point check no longer references
          javax.baja.control (control-rt not on the Program classpath).
-         Uses the registered type "control:ControlPoint" instead.
+  v1.05  equipName came back blank. Point check no longer uses a type
+         lookup: a child counts as a point if it has an "out" slot
+         holding a status value AND a "facets" slot (every control
+         point, proxy points included). Parent lookup falls back to
+         resolving the parent's slot path. When no name can be found,
+         equipName shows the reason, starting with "?".
 
 Purpose
 -------
@@ -45,18 +50,24 @@ Outputs
 
   equipName
     1. Start at the folder this block is in.
-    2. If that folder holds at least one point (a direct child that is a
-       control point), it is the equipment: equipName = its name.
+    2. If that folder holds at least one point, it is the equipment:
+       equipName = its name.
     3. If it holds no points, it is a sub-folder. Take the last number
        in its name (Folder_2 -> 2) and move up to its parent. Repeat
        until a folder with points is found.
     4. equipName = equipment name + " (n)". If the sub-folder name has
        no number, the equipment name is used alone.
+    A point = a direct child (not this block) with an "out" slot
+    holding a status value and a "facets" slot.
     The building prefix (B + digits + "_") is removed from the
     equipment name. Escaped names are shown as Workbench displays them
     ($20 -> space, $2d -> -). Re-evaluated every run, so a copied or
-    moved block picks up its new location. Empty if no folder with
-    points is found.
+    moved block picks up its new location.
+
+    If no name can be found, equipName shows why:
+      ?getComponent ...   could not get this block
+      ?no parent          could not get the block's folder
+      ?no points found    walked to the top without finding a point
 
   Examples
     .../VAV/B90009_VAV_102/zoneTempDelta                  -> VAV_102
@@ -84,7 +95,7 @@ Slot Sheet
 ================================================================================
 */
 
-private static final String VERSION = "v1.04";
+private static final String VERSION = "v1.05";
 
 public void onStart() throws Exception
 {
@@ -127,8 +138,16 @@ public void onStop() throws Exception
 // change event on every execute.
 private void updateEquipName()
 {
-  String name = findEquipName();
-  String cur  = getEquipName();
+  String name;
+  try
+  {
+    name = findEquipName();
+  }
+  catch (Throwable t)
+  {
+    name = "?error " + t;
+  }
+  String cur = getEquipName();
   if (cur == null || !cur.equals(name)) setEquipName(name);
 }
 
@@ -137,54 +156,89 @@ private void updateEquipName()
 // going. The first folder with points is the equipment.
 private String findEquipName()
 {
-  javax.baja.sys.BComponent folder;
+  javax.baja.sys.BComponent self;
   try
   {
-    javax.baja.sys.BComponent self = (javax.baja.sys.BComponent) getComponent();
-    if (self == null) return "";
-    folder = self.getParentComponent();
+    self = (javax.baja.sys.BComponent) getComponent();
   }
   catch (Throwable t)
   {
-    return "";
+    return "?getComponent " + t;
   }
+  if (self == null) return "?getComponent null";
+
+  javax.baja.sys.BComponent folder = parentOf(self);
+  if (folder == null) return "?no parent";
 
   String subNum = null;
   int guard = 0;
   while (folder != null && guard++ < 20)
   {
     String n = unescapeName(folder.getName());
-    if (hasPoints(folder))
+    if (hasPoints(folder, self))
     {
       String equip = stripBuilding(n);
       if (subNum != null) return equip + " (" + subNum + ")";
       return equip;
     }
     if (subNum == null) subNum = lastNumber(n);
-    try
-    {
-      folder = folder.getParentComponent();
-    }
-    catch (Throwable t)
-    {
-      folder = null;
-    }
+    folder = parentOf(folder);
   }
-  return "";
+  return "?no points found";
 }
 
-// True if any direct child of c is a control point. Looks the type up
-// by name so no control-rt import is needed.
-private boolean hasPoints(javax.baja.sys.BComponent c)
+// Parent component. Tries getParentComponent() first, then resolves
+// the parent's slot path.
+private javax.baja.sys.BComponent parentOf(javax.baja.sys.BComponent c)
 {
   try
   {
-    javax.baja.sys.Type cp = javax.baja.sys.Sys.getType("control:ControlPoint");
-    javax.baja.sys.BComponent[] kids = c.getChildComponents();
-    for (int i = 0; i < kids.length; i++)
-      if (kids[i].getType().is(cp)) return true;
+    javax.baja.sys.BComponent p = c.getParentComponent();
+    if (p != null && p != c) return p;
   }
   catch (Throwable ignore) {}
+
+  try
+  {
+    String path = c.getSlotPath().toString();
+    if (path.startsWith("slot:")) path = path.substring(5);
+    int slash = path.lastIndexOf('/');
+    if (slash <= 0) return null;
+    Object o = javax.baja.naming.BOrd.make(
+      "station:|slot:" + path.substring(0, slash)).resolve().get();
+    if (o instanceof javax.baja.sys.BComponent && o != c)
+      return (javax.baja.sys.BComponent) o;
+  }
+  catch (Throwable ignore) {}
+
+  return null;
+}
+
+// True if any direct child of c (other than this block) is a point:
+// an "out" slot holding a status value plus a "facets" slot.
+private boolean hasPoints(javax.baja.sys.BComponent c,
+                          javax.baja.sys.BComponent self)
+{
+  javax.baja.sys.BComponent[] kids;
+  try
+  {
+    kids = c.getChildComponents();
+  }
+  catch (Throwable t)
+  {
+    return false;
+  }
+  for (int i = 0; i < kids.length; i++)
+  {
+    if (kids[i] == self) continue;
+    try
+    {
+      Object out = kids[i].get("out");
+      if (out instanceof BStatusValue && kids[i].get("facets") != null)
+        return true;
+    }
+    catch (Throwable ignore) {}
+  }
   return false;
 }
 
