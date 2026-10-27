@@ -63,12 +63,12 @@ Outputs
     Always returned in upper case.
 
   Examples
-    .../VAV/B90009_VAV_102/zoneTempDelta
-        equipName VAV_102,        buildingNum B90009
-    .../VAV/B90009_VAV_117/B90009_VAV_117_Folder_2/zoneTempDelta
-        equipName VAV_117 (2),    buildingNum B90009
-    .../B90009_7755Hurontario/IO_B90009_01/points/VAV/VAV_5/zoneTempDelta
-        equipName VAV_5,          buildingNum B90009 (from the path)
+    .../VAV/BXXXXX_VAV_102/zoneTempDelta
+        equipName VAV_102,        buildingNum BXXXXX
+    .../VAV/BXXXXX_VAV_117/BXXXXY_VAV_117_Folder_2/zoneTempDelta
+        equipName VAV_117 (2),    buildingNum BXXXXY
+    .../BXXXXX_1234Lakeontario/OT_BXXXXX_01/points/VAV/VAV_5/zoneTempDelta
+        equipName VAV_5,          buildingNum BXXXXX (from the path)
 
 Imports
 -------
