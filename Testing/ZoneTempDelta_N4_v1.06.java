@@ -2,7 +2,7 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.05
+Version: v1.06
 Date:    2026-10-27
 
 Changes
@@ -26,6 +26,9 @@ Changes
          point, proxy points included). Parent lookup falls back to
          resolving the parent's slot path. When no name can be found,
          equipName shows the reason, starting with "?".
+  v1.06  Added buildingNum output. Taken from the equipment name's
+         prefix (B90009_VAV_117 -> B90009). If the equipment name has
+         no prefix, the last B-number in the slot path is used.
 
 Purpose
 -------
@@ -33,6 +36,7 @@ out = zoneTemp - zoneTempSp
   Positive -> zone is above setpoint.
   Negative -> zone is below setpoint.
 pointStatus flags a bad input. equipName names the equipment.
+buildingNum names the building.
 Runs on change of either input, and once on start. No logging.
 
 Outputs
@@ -69,11 +73,23 @@ Outputs
       ?no parent          could not get the block's folder
       ?no points found    walked to the top without finding a point
 
+  buildingNum
+    1. If the equipment name starts with B + digits + "_", that
+       B-number is used: B90009_VAV_117 -> B90009.
+    2. Otherwise, the last B-number in the equipment's slot path is
+       used (the block's own path if no equipment was found). A
+       B-number is B + digits, not preceded by a letter or digit, so
+       IO_B90009_01 and B90009_7755Hurontario both give B90009.
+    3. Empty if neither finds one.
+    Always returned in upper case.
+
   Examples
-    .../VAV/B90009_VAV_102/zoneTempDelta                  -> VAV_102
+    .../VAV/B90009_VAV_102/zoneTempDelta
+        equipName VAV_102,        buildingNum B90009
     .../VAV/B90009_VAV_117/B90009_VAV_117_Folder_2/zoneTempDelta
-                                                          -> VAV_117 (2)
-    .../VAV/B90009_VAV_117/Folder_3/zoneTempDelta         -> VAV_117 (3)
+        equipName VAV_117 (2),    buildingNum B90009
+    .../B90009_7755Hurontario/IO_B90009_01/points/VAV/VAV_5/zoneTempDelta
+        equipName VAV_5,          buildingNum B90009 (from the path)
 
 Imports
 -------
@@ -91,11 +107,16 @@ Slot Sheet
   pointStatus  baja:StatusBoolean   Summary, Read Only,
                                     facets trueText=" " falseText="Ok"
   equipName    baja:String          Summary, Read Only
+  buildingNum  baja:String          Summary, Read Only
   version      baja:String          Read Only
 ================================================================================
 */
 
-private static final String VERSION = "v1.05";
+private static final String VERSION = "v1.06";
+
+// Results of one findEquipName() pass. Only used within a single run.
+private String foundEquip;
+private String foundBldg;
 
 public void onStart() throws Exception
 {
@@ -123,7 +144,7 @@ public void onExecute() throws Exception
     setPointStatus(new BStatusBoolean(false, BStatus.ok));
   }
 
-  updateEquipName();
+  updateNames();
 }
 
 public void onStop() throws Exception
@@ -131,30 +152,36 @@ public void onStop() throws Exception
 }
 
 // ----------------------------------------------------
-// equipName
+// equipName / buildingNum
 // ----------------------------------------------------
 
-// Write equipName only when it changes, so the slot doesn't fire a
-// change event on every execute.
-private void updateEquipName()
+// Write each slot only when it changes, so it doesn't fire a change
+// event on every execute.
+private void updateNames()
 {
-  String name;
+  foundEquip = "";
+  foundBldg  = "";
   try
   {
-    name = findEquipName();
+    findNames();
   }
   catch (Throwable t)
   {
-    name = "?error " + t;
+    foundEquip = "?error " + t;
   }
+
   String cur = getEquipName();
-  if (cur == null || !cur.equals(name)) setEquipName(name);
+  if (cur == null || !cur.equals(foundEquip)) setEquipName(foundEquip);
+
+  cur = getBuildingNum();
+  if (cur == null || !cur.equals(foundBldg)) setBuildingNum(foundBldg);
 }
 
 // Walk up from the folder this block is in. A folder with no points is
 // a sub-folder: remember its number (innermost one wins) and keep
 // going. The first folder with points is the equipment.
-private String findEquipName()
+// Sets foundEquip and foundBldg.
+private void findNames()
 {
   javax.baja.sys.BComponent self;
   try
@@ -163,12 +190,22 @@ private String findEquipName()
   }
   catch (Throwable t)
   {
-    return "?getComponent " + t;
+    foundEquip = "?getComponent " + t;
+    return;
   }
-  if (self == null) return "?getComponent null";
+  if (self == null)
+  {
+    foundEquip = "?getComponent null";
+    return;
+  }
 
   javax.baja.sys.BComponent folder = parentOf(self);
-  if (folder == null) return "?no parent";
+  if (folder == null)
+  {
+    foundEquip = "?no parent";
+    foundBldg  = lastBuildingInPath(self);
+    return;
+  }
 
   String subNum = null;
   int guard = 0;
@@ -178,13 +215,18 @@ private String findEquipName()
     if (hasPoints(folder, self))
     {
       String equip = stripBuilding(n);
-      if (subNum != null) return equip + " (" + subNum + ")";
-      return equip;
+      foundEquip = (subNum != null) ? equip + " (" + subNum + ")" : equip;
+
+      String b = buildingPrefix(n);
+      foundBldg = (b != null) ? b : lastBuildingInPath(folder);
+      return;
     }
     if (subNum == null) subNum = lastNumber(n);
     folder = parentOf(folder);
   }
-  return "?no points found";
+
+  foundEquip = "?no points found";
+  foundBldg  = lastBuildingInPath(self);
 }
 
 // Parent component. Tries getParentComponent() first, then resolves
@@ -240,6 +282,38 @@ private boolean hasPoints(javax.baja.sys.BComponent c,
     catch (Throwable ignore) {}
   }
   return false;
+}
+
+// "B90009_VAV_117" -> "B90009". Null if the name has no B + digits + "_"
+// prefix.
+private String buildingPrefix(String n)
+{
+  if (n == null) return null;
+  java.util.regex.Matcher m =
+    java.util.regex.Pattern.compile("^([Bb][0-9]+)_").matcher(n);
+  return m.find() ? m.group(1).toUpperCase() : null;
+}
+
+// Last B-number in c's slot path. A B-number is B + digits, not
+// preceded by a letter or digit and not followed by a digit.
+// ".../B90009_7755Hurontario/IO_B90009_01/points/VAV" -> "B90009".
+// Empty if none.
+private String lastBuildingInPath(javax.baja.sys.BComponent c)
+{
+  String path;
+  try
+  {
+    path = unescapeName(c.getSlotPath().toString());
+  }
+  catch (Throwable t)
+  {
+    return "";
+  }
+  java.util.regex.Matcher m = java.util.regex.Pattern
+    .compile("(?<![A-Za-z0-9])([Bb][0-9]+)(?![0-9])").matcher(path);
+  String last = "";
+  while (m.find()) last = m.group(1).toUpperCase();
+  return last;
 }
 
 // Last run of digits in a name, without leading zeros.
