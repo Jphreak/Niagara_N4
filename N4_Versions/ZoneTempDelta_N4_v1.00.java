@@ -54,19 +54,19 @@ Outputs
 
   buildingNum
     1. If the equipment name starts with B + digits + "_", that
-       B-number is used: B90009_VAV_117 -> B90009.
+       B-number is used: BXXXXX_VAV_301 -> BXXXXX.
     2. Otherwise, the last B-number in the equipment's slot path is
        used (the block's own path if no equipment was found). A
        B-number is B + digits, not preceded by a letter or digit, so
-       IO_B90009_01 and B90009_7755Hurontario both give B90009.
+       OT_BXXXXX_01 and BXXXXX_1234Lakeontario both give BXXXXX.
     3. Empty if neither finds one.
     Always returned in upper case.
 
   Examples
-    .../VAV/BXXXXX_VAV_102/zoneTempDelta
-        equipName VAV_102,        buildingNum BXXXXX
-    .../VAV/BXXXXX_VAV_117/BXXXXY_VAV_117_Folder_2/zoneTempDelta
-        equipName VAV_117 (2),    buildingNum BXXXXY
+    .../VAV/BXXXXX_VAV_201/zoneTempDelta
+        equipName VAV_201,        buildingNum BXXXXX
+    .../VAV/BXXXXX_VAV_301/BXXXXX_VAV_301_Folder_2/zoneTempDelta
+        equipName VAV_301 (2),    buildingNum BXXXXX
     .../BXXXXX_1234Lakeontario/OT_BXXXXX_01/points/VAV/VAV_5/zoneTempDelta
         equipName VAV_5,          buildingNum BXXXXX (from the path)
 
@@ -263,7 +263,7 @@ private boolean hasPoints(javax.baja.sys.BComponent c,
   return false;
 }
 
-// "B90009_VAV_117" -> "B90009". Null if the name has no B + digits + "_"
+// "BXXXXX_VAV_301" -> "BXXXXX". Null if the name has no B + digits + "_"
 // prefix.
 private String buildingPrefix(String n)
 {
@@ -275,7 +275,7 @@ private String buildingPrefix(String n)
 
 // Last B-number in c's slot path. A B-number is B + digits, not
 // preceded by a letter or digit and not followed by a digit.
-// ".../B90009_7755Hurontario/IO_B90009_01/points/VAV" -> "B90009".
+// ".../BXXXXX_1234Lakeontario/OT_BXXXXX_01/points/VAV" -> "BXXXXX".
 // Empty if none.
 private String lastBuildingInPath(javax.baja.sys.BComponent c)
 {
@@ -296,7 +296,7 @@ private String lastBuildingInPath(javax.baja.sys.BComponent c)
 }
 
 // Last run of digits in a name, without leading zeros.
-// "B90009_VAV_117_Folder_2" -> "2", "Folder_03" -> "3", "Logic" -> null.
+// "BXXXXX_VAV_301_Folder_2" -> "2", "Folder_03" -> "3", "Logic" -> null.
 private String lastNumber(String n)
 {
   if (n == null) return null;
@@ -316,7 +316,7 @@ private String lastNumber(String n)
   }
 }
 
-// "B90009_VAV_117" -> "VAV_117". Only strips B + digits + "_" at the
+// "BXXXXX_VAV_301" -> "VAV_301". Only strips B + digits + "_" at the
 // start; a name that would end up empty is returned unchanged.
 private String stripBuilding(String n)
 {
