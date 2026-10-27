@@ -2,19 +2,22 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.02
-Date:    2026-10-26
+Version: v1.03
+Date:    2026-10-27
 
 Changes
 -------
   v1.00  Initial release.
   v1.01  Added equipName output: name of the equipment folder this block
-         lives in, found from the block's own slot path. Any folder with
-         "folder" in its name (any case) is skipped, so a block nested in
-         e.g. B90009_VAV_117/B90009_VAV_117_Folder_2 still reports
-         B90009_VAV_117.
+         lives in, found from the block's own slot path. Folders with
+         "folder" in the name were skipped.
   v1.02  equipName drops the building prefix (B + digits + "_"):
          B90009_VAV_117 -> VAV_117.
+  v1.03  equipName sub-folder rule: if the block's folder holds no points,
+         it is a sub-folder. equipName becomes the parent equipment name
+         plus the sub-folder's number:
+         VAV_117/VAV_117_Folder_2 -> "VAV_117 (2)".
+         Replaces the v1.01 "folder"-in-the-name rule.
 
 Purpose
 -------
@@ -37,18 +40,26 @@ Outputs
   Both outputs are rewritten as whole new values on every run, so a
   copied block never keeps the source block's state.
 
-  equipName  Walks up the block's slot path from its parent folder and
-             returns the first folder name that does not contain
-             "folder", with a leading building prefix (B + digits +
-             "_", e.g. "B90009_") removed. Escaped names are shown as Workbench displays
-             them ($20 -> space, $2d -> -). Re-evaluated every run, so a
-             copied or moved block picks up its new location. Empty if
-             no qualifying folder is found.
+  equipName
+    1. Start at the folder this block is in.
+    2. If that folder holds at least one point (a direct child that is a
+       control point), it is the equipment: equipName = its name.
+    3. If it holds no points, it is a sub-folder. Take the last number
+       in its name (Folder_2 -> 2) and move up to its parent. Repeat
+       until a folder with points is found.
+    4. equipName = equipment name + " (n)". If the sub-folder name has
+       no number, the equipment name is used alone.
+    The building prefix (B + digits + "_") is removed from the
+    equipment name. Escaped names are shown as Workbench displays them
+    ($20 -> space, $2d -> -). Re-evaluated every run, so a copied or
+    moved block picks up its new location. Empty if no folder with
+    points is found.
 
   Examples
     .../VAV/B90009_VAV_102/zoneTempDelta                  -> VAV_102
     .../VAV/B90009_VAV_117/B90009_VAV_117_Folder_2/zoneTempDelta
-                                                          -> VAV_117
+                                                          -> VAV_117 (2)
+    .../VAV/B90009_VAV_117/Folder_3/zoneTempDelta         -> VAV_117 (3)
 
 Imports
 -------
@@ -70,7 +81,7 @@ Slot Sheet
 ================================================================================
 */
 
-private static final String VERSION = "v1.02";
+private static final String VERSION = "v1.03";
 
 public void onStart() throws Exception
 {
@@ -118,38 +129,79 @@ private void updateEquipName()
   if (cur == null || !cur.equals(name)) setEquipName(name);
 }
 
-// Path of this block, e.g.
-//   /Drivers/.../VAV/B90009_VAV_117/B90009_VAV_117_Folder_2/zoneTempDelta
-// The last segment is the block itself. Walk back from its parent and
-// return the first segment that isn't a "folder", minus its building
-// prefix.
+// Walk up from the folder this block is in. A folder with no points is
+// a sub-folder: remember its number (innermost one wins) and keep
+// going. The first folder with points is the equipment.
 private String findEquipName()
 {
-  String path;
+  javax.baja.sys.BComponent folder;
   try
   {
     javax.baja.sys.BComponent self = (javax.baja.sys.BComponent) getComponent();
-    if (self == null || self.getSlotPath() == null) return "";
-    path = self.getSlotPath().toString();
+    if (self == null) return "";
+    folder = self.getParentComponent();
   }
   catch (Throwable t)
   {
     return "";
   }
 
-  if (path.startsWith("slot:")) path = path.substring(5);
-  String[] seg = path.split("/");
-
-  // seg[seg.length - 1] is this block; start at its parent.
-  for (int i = seg.length - 2; i >= 0; i--)
+  String subNum = null;
+  int guard = 0;
+  while (folder != null && guard++ < 20)
   {
-    String s = seg[i];
-    if (s == null || s.length() == 0) continue;
-    String n = unescapeName(s);
-    if (n.toLowerCase().indexOf("folder") >= 0) continue;
-    return stripBuilding(n);
+    String n = unescapeName(folder.getName());
+    if (hasPoints(folder))
+    {
+      String equip = stripBuilding(n);
+      if (subNum != null) return equip + " (" + subNum + ")";
+      return equip;
+    }
+    if (subNum == null) subNum = lastNumber(n);
+    try
+    {
+      folder = folder.getParentComponent();
+    }
+    catch (Throwable t)
+    {
+      folder = null;
+    }
   }
   return "";
+}
+
+// True if any direct child of c is a control point.
+private boolean hasPoints(javax.baja.sys.BComponent c)
+{
+  try
+  {
+    javax.baja.sys.BComponent[] kids = c.getChildComponents();
+    for (int i = 0; i < kids.length; i++)
+      if (kids[i] instanceof javax.baja.control.BControlPoint) return true;
+  }
+  catch (Throwable ignore) {}
+  return false;
+}
+
+// Last run of digits in a name, without leading zeros.
+// "B90009_VAV_117_Folder_2" -> "2", "Folder_03" -> "3", "Logic" -> null.
+private String lastNumber(String n)
+{
+  if (n == null) return null;
+  int end = n.length();
+  while (end > 0 && !Character.isDigit(n.charAt(end - 1))) end--;
+  if (end == 0) return null;
+  int start = end;
+  while (start > 0 && Character.isDigit(n.charAt(start - 1))) start--;
+  String d = n.substring(start, end);
+  try
+  {
+    return String.valueOf(Integer.parseInt(d));
+  }
+  catch (NumberFormatException e)
+  {
+    return d;
+  }
 }
 
 // "B90009_VAV_117" -> "VAV_117". Only strips B + digits + "_" at the
@@ -164,6 +216,7 @@ private String stripBuilding(String n)
 // are copied through unchanged.
 private String unescapeName(String s)
 {
+  if (s == null) return "";
   if (s.indexOf('$') < 0) return s;
   StringBuffer out = new StringBuffer();
   int i = 0;
