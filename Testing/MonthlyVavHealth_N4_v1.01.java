@@ -2,12 +2,17 @@
 ================================================================================
 Program: MonthlyVavHealth - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.00
+Version: v1.01
 Date:    2026-10-28
 
 Changes
 -------
   v1.00  Initial release.
+  v1.01  Live reports have fixed names (no month) so the same file can be
+         emailed every month. Added Archive Reports / Test Archive
+         actions: rename each live report with its month and move it to
+         archiveFolder. A new report for a different month archives the
+         old live files first, so nothing is overwritten.
 
 Purpose
 -------
@@ -37,8 +42,12 @@ Sample files
 
 Report (one file per building)
 ------------------------------
-  <reportFolder>/<reportName> <B#> <yyyy-MM>.csv
-  e.g. Monthly VAV health BXXXXX 2026-10.csv   (overwritten if re-run)
+  Live:     <reportFolder>/<reportName> <B#>.csv
+            e.g. Monthly VAV health BXXXXX.csv
+  Archived: <archiveFolder>/<reportName> <B#> <yyyy-MM>.csv
+            e.g. Monthly VAV health BXXXXX 2026-10.csv
+  liveMonth shows which month the live files hold. Re-running the same
+  month overwrites them. Running a different month archives them first.
 
   Building Number,Equipment Name,Number of Samples,Number of Passes,
   Number of Fails,Number of Skips,% Passes,% Fails,% Skips
@@ -74,6 +83,11 @@ Actions
   Test Report     Same month rules, but writes "TEST <name>" files and
                   emails only testEmail (if set). Blank reportMonth here
                   = this month so far, so it works with today's files.
+  Archive Reports Renames every live report to "<name> <B#> <liveMonth>.csv"
+                  and moves it to archiveFolder. Link a trigger to it
+                  (e.g. after your email goes out) or click it. If the
+                  archive name is taken, " (2)", " (3)"... is added.
+  Test Archive    Same, for the TEST files (uses testLiveMonth).
 
 Imports
 -------
@@ -88,6 +102,8 @@ Slot Sheet
   fileMatch      baja:String    default ZoneTempDeltaT
   reportFolder   baja:Ord       default file:^Csv_Logs/Monthly_Reports
   reportName     baja:String    default Monthly VAV health
+  archiveFolder  baja:Ord       default
+                                file:^Csv_Logs/Monthly_Reports/Archive
   band           baja:Double    default 2.0
   emailList      baja:String    facets multiLine=true,fieldWidth=75
   emailSubject   baja:String    default Monthly VAV health
@@ -96,6 +112,8 @@ Slot Sheet
   runHour        baja:Integer   default 6, facets min=0,max=23
   tick           baja:AbsTime   Execute On Change (link from CurrentTime)
   lastReported   baja:String    Read Only
+  liveMonth      baja:String    Read Only   (month in the live reports)
+  testLiveMonth  baja:String    Read Only   (month in the TEST reports)
   status         baja:String    Read Only,
                                 facets multiLine=true,fieldWidth=110
   version        baja:String    Read Only
@@ -103,14 +121,17 @@ Slot Sheet
                                 facets multiLine=true,fieldWidth=75
   runReport      Action         Display Name "Run Report Now"
   testReport     Action         Display Name "Test Report"
+  archive        Action         Display Name "Archive Reports"
+  testArchive    Action         Display Name "Test Archive"
 ================================================================================
 */
 
-private static final String VERSION = "v1.00";
+private static final String VERSION = "v1.01";
 
 private static final String DEFAULT_SAMPLES = "file:^Csv_Logs/VAV_Samples";
 private static final String DEFAULT_REPORTS = "file:^Csv_Logs/Monthly_Reports";
 private static final String DEFAULT_NAME    = "Monthly VAV health";
+private static final String DEFAULT_ARCHIVE = "file:^Csv_Logs/Monthly_Reports/Archive";
 private static final String DEFAULT_MATCH   = "ZoneTempDeltaT";
 private static final double DEFAULT_BAND    = 2.0;
 
@@ -119,7 +140,7 @@ private static final String REPORT_HEADER =
   "Number of Fails,Number of Skips,% Passes,% Fails,% Skips";
 
 private static final String QUICK_GUIDE =
-  "Monthly VAV Health " + "v1.00\n" +
+  "Monthly VAV Health " + "v1.01\n" +
   "=====================================\n" +
   "\n" +
   "Reads the ZoneTempDeltaT sample CSVs in samplesFolder and, on the\n" +
@@ -139,11 +160,18 @@ private static final String QUICK_GUIDE =
   "  2. Fill in emailList.\n" +
   "  3. Link a CurrentTime block to tick.\n" +
   "\n" +
+  "Live reports: '<reportName> <B#>.csv' (same name every month).\n" +
+  "liveMonth = month they hold.\n" +
+  "\n" +
   "Actions:\n" +
-  "  Run Report Now  reportMonth (blank = last month), real files\n" +
-  "                  + building emails\n" +
-  "  Test Report     'TEST ' files, emails testEmail only\n" +
-  "                  (blank reportMonth = this month so far)\n";
+  "  Run Report Now   reportMonth (blank = last month), real files\n" +
+  "                   + building emails\n" +
+  "  Test Report      'TEST ' files, emails testEmail only\n" +
+  "                   (blank reportMonth = this month so far)\n" +
+  "  Archive Reports  live reports -> archiveFolder as\n" +
+  "                   '<reportName> <B#> <liveMonth>.csv'\n" +
+  "                   (link your trigger here)\n" +
+  "  Test Archive     same for the TEST files\n";
 
 public void onStart() throws Exception
 {
@@ -185,6 +213,22 @@ public void onTestReport() throws Exception
 {
   String m = cleanMonth(getReportMonth());
   runFor(m != null ? m : monthOffset(0), true);
+}
+
+public void onArchive() throws Exception
+{
+  StringBuffer log = new StringBuffer();
+  log.append("[").append(now()).append("] Archive\n");
+  archiveReports(false, log);
+  setStatus(log.toString());
+}
+
+public void onTestArchive() throws Exception
+{
+  StringBuffer log = new StringBuffer();
+  log.append("[").append(now()).append("] TEST archive\n");
+  archiveReports(true, log);
+  setStatus(log.toString());
 }
 
 // ----------------------------------------------------
@@ -254,9 +298,17 @@ private void runFor(String month, boolean test)
   }
   if (!outDir.exists()) outDir.mkdirs();
 
-  String baseName = getReportName();
-  if (baseName == null || baseName.trim().length() == 0) baseName = DEFAULT_NAME;
-  baseName = baseName.trim();
+  String baseName = baseName();
+
+  // Live files hold a different month: archive them before overwriting.
+  String live = test ? getTestLiveMonth() : getLiveMonth();
+  if (live != null && live.length() > 0 && !live.equals(month))
+  {
+    log.append("Live reports hold ").append(live).append(", archiving first:\n");
+    archiveReports(test, log);
+  }
+  if (test) setTestLiveMonth(month);
+  else setLiveMonth(month);
 
   java.util.Map lists = parseEmailList(getEmailList());
   String subjectBase = getEmailSubject();
@@ -270,7 +322,7 @@ private void runFor(String month, boolean test)
     String bldg = (String) bi.next();
     java.util.Map equips = (java.util.Map) data.get(bldg);
 
-    String fileName = (test ? "TEST " : "") + baseName + " " + bldg + " " + month + ".csv";
+    String fileName = (test ? "TEST " : "") + baseName + " " + bldg + ".csv";
     java.io.File out = new java.io.File(outDir, fileName);
     int[] tot = writeReport(out, bldg, equips);
     if (tot == null)
@@ -304,6 +356,116 @@ private void runFor(String month, boolean test)
   }
 
   setStatus(log.toString());
+}
+
+// ----------------------------------------------------
+// Archive
+// ----------------------------------------------------
+
+// Moves every live report ("<name> <B#>.csv", or "TEST <name> <B#>.csv")
+// to archiveFolder as "<name> <B#> <month>.csv", month = liveMonth.
+private void archiveReports(boolean test, StringBuffer log)
+{
+  String month = test ? getTestLiveMonth() : getLiveMonth();
+  if (month == null || month.trim().length() == 0)
+  {
+    log.append("Nothing to archive (").append(test ? "testLiveMonth" : "liveMonth")
+       .append(" is blank)\n");
+    return;
+  }
+  month = month.trim();
+
+  java.io.File dir = resolveToFile(ordString("reportFolder", DEFAULT_REPORTS));
+  java.io.File arch = resolveToFile(ordString("archiveFolder", DEFAULT_ARCHIVE));
+  if (dir == null || !dir.isDirectory())
+  {
+    log.append("Report folder not found\n");
+    return;
+  }
+  if (arch == null)
+  {
+    log.append("Archive folder refused: ")
+       .append(ordString("archiveFolder", DEFAULT_ARCHIVE)).append("\n");
+    return;
+  }
+  if (!arch.exists()) arch.mkdirs();
+
+  String prefix = (test ? "TEST " : "") + baseName() + " ";
+  // Live name = prefix + one-word building + ".csv". Already-dated names
+  // ("<name> <B#> <month>.csv") have a space in that part and are skipped.
+  java.util.regex.Pattern bnum = java.util.regex.Pattern.compile("^\\S+$");
+
+  int moved = 0;
+  int failed = 0;
+  java.io.File[] files = dir.listFiles();
+  if (files == null) files = new java.io.File[0];
+  for (int i = 0; i < files.length; i++)
+  {
+    java.io.File f = files[i];
+    String n = f.getName();
+    if (!f.isFile() || !n.startsWith(prefix) || !n.toLowerCase().endsWith(".csv")) continue;
+    String mid = n.substring(prefix.length(), n.length() - 4);
+    if (!bnum.matcher(mid).matches()) continue;
+
+    String stem = n.substring(0, n.length() - 4) + " " + month;
+    java.io.File target = new java.io.File(arch, stem + ".csv");
+    for (int k = 2; target.exists() && k < 100; k++)
+      target = new java.io.File(arch, stem + " (" + k + ").csv");
+
+    if (moveFile(f, target))
+    {
+      moved++;
+      log.append("  ").append(n).append(" -> ").append(target.getName()).append("\n");
+    }
+    else
+    {
+      failed++;
+      log.append("  FAILED ").append(n).append("\n");
+    }
+  }
+
+  log.append("Archived ").append(moved).append(" report(s) for ").append(month);
+  if (failed > 0) log.append(", ").append(failed).append(" failed");
+  log.append("\n");
+
+  if (failed == 0)
+  {
+    if (test) setTestLiveMonth("");
+    else setLiveMonth("");
+  }
+}
+
+// Rename, or copy + delete if rename isn't possible.
+private boolean moveFile(java.io.File from, java.io.File to)
+{
+  if (from.renameTo(to)) return true;
+  java.io.InputStream in = null;
+  java.io.OutputStream out = null;
+  try
+  {
+    in = new java.io.FileInputStream(from);
+    out = new java.io.FileOutputStream(to);
+    byte[] buf = new byte[8192];
+    int r;
+    while ((r = in.read(buf)) > 0) out.write(buf, 0, r);
+  }
+  catch (Exception e)
+  {
+    return false;
+  }
+  finally
+  {
+    if (in != null) try { in.close(); } catch (Exception ignore) {}
+    if (out != null) try { out.close(); } catch (Exception ignore) {}
+  }
+  return from.delete();
+}
+
+private String baseName()
+{
+  String b = getReportName();
+  if (b == null || b.trim().length() == 0) b = DEFAULT_NAME;
+  return b.trim();
 }
 
 // Adds one sample file's rows to data. False if the file can't be read.
