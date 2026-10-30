@@ -2,12 +2,19 @@
 ================================================================================
 Program: Mailer - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.00
+Version: v1.01
 Date:    2026-10-30
 
 Changes
 -------
   v1.00  Initial release.
+  v1.01  latestOnly toggle: a wildcard or folder line attaches only its
+         newest file (by modified date); per line, start the line with
+         "latest:". Status and Dry Run show each file's modified date.
+         Save Config / Load Config actions back up the settings to a
+         text file and reload them into a fresh Mailer. New configFile
+         slot: a file, or a folder to save <name>.properties in (blank =
+         file:^Mailer_Config). New slots: latestOnly, configFile.
 
 Purpose
 -------
@@ -29,6 +36,15 @@ Files (one per line, # = comment)
   use file:^SomeFolder/BXXXXX*.csv for files inside SomeFolder.
   Paths must be inside the station home folder. Leave files blank to
   send the body only (to 'to').
+
+Latest file only
+----------------
+  latestOnly = true: every wildcard / folder line attaches only the
+  newest matching file (by modified date). A single-file line is not
+  affected. Per line instead: start the line with "latest:"
+    latest: file:^Reports/Monthly VAV health BXXXXX*.csv => a@company.com
+  Newest is PER LINE: file:^Reports/B*.csv with latest gives ONE file in
+  total, not one per building - use a line per building for that.
 
 Recipients per file
 -------------------
@@ -55,6 +71,22 @@ Sender
   and status lists what is available.
   fromAddress sets the From address (blank = the account's default).
 
+Save / Load Config
+------------------
+  Save Config writes files, to, cc, bcc, subject, body, fromAddress,
+  latestOnly and the picked sender to configFile. If the file already
+  exists it is first copied to <file>.bak.
+  Load Config reads them back into the slots (the sender list is
+  refreshed first; if the saved account no longer exists, Default is
+  picked and status says so).
+  configFile can be a file (file:^Backups/Reports.properties) or a
+  folder (file:^Backups) - with a folder, the file inside it is
+  <this program's name>.properties. Blank = folder file:^Mailer_Config.
+  So a fresh Mailer pasted in with the same name finds its settings
+  with nothing to type. Different names keep separate files.
+  The file is plain text, one key=value per line (UTF-8); line breaks in
+  files / body are written as \n. It can be edited in Notepad.
+
 Recipients
 ----------
   to, cc, bcc: one or more addresses separated by ; or ,
@@ -76,6 +108,8 @@ Actions
   Dry Run           show each email that would go out (recipients,
                     files, sizes); nothing is sent
   Refresh Accounts  rebuild the sender drop-down
+  Save Config       back up the settings to configFile
+  Load Config       load the settings from configFile
 
 Imports
 -------
@@ -94,6 +128,9 @@ Slot Sheet
   body             baja:String       facets multiLine=true,fieldWidth=100
   sender           baja:DynamicEnum  (list filled in by the program)
   fromAddress      baja:String
+  latestOnly       baja:Boolean      default false
+  configFile       baja:Ord          a file, or a folder (saves <name>.properties
+                                     in it); blank = file:^Mailer_Config
   status           baja:String       Read Only,
                                      facets multiLine=true,fieldWidth=110
   lastSent         baja:String       Read Only
@@ -103,14 +140,16 @@ Slot Sheet
   send             Action            Display Name "Send Now"
   dryRun           Action            Display Name "Dry Run - No Send"
   refreshAccounts  Action            Display Name "Refresh Accounts"
+  saveConfig       Action            Display Name "Save Config"
+  loadConfig       Action            Display Name "Load Config"
 ================================================================================
 */
 
-private static final String VERSION = "v1.00";
+private static final String VERSION = "v1.01";
 private static final String DEFAULT_TAG = "Default";
 
 private static final String QUICK_GUIDE =
-  "Mailer " + "v1.00\n" +
+  "Mailer " + "v1.01\n" +
   "=====================================\n" +
   "\n" +
   "Emails files from the station's Files through the EmailService.\n" +
@@ -123,6 +162,8 @@ private static final String QUICK_GUIDE =
   "  file:^Csv_Logs/Report BXXXXX.csv => a@x.com; cc: b@x.com\n" +
   "  prefixes cc: / bcc: (none = To). No => : goes to 'to'.\n" +
   "  One email per line; same recipients = one email.\n" +
+  "latestOnly / line prefix latest: = newest file only\n" +
+  "  (per line, by modified date)\n" +
   "\n" +
   "to / cc / bcc: addresses separated by ; or ,\n" +
   "cc and bcc slots go on every email.\n" +
@@ -133,6 +174,9 @@ private static final String QUICK_GUIDE =
   "  Send Now          send it\n" +
   "  Dry Run           show what would be sent, send nothing\n" +
   "  Refresh Accounts  rebuild the sender list\n" +
+  "  Save Config       back up settings to configFile\n" +
+  "  Load Config       load settings from configFile\n" +
+  "  (configFile blank = file:^Mailer_Config/<name>.properties)\n" +
   "\n" +
   "status line 1 starts with SENT / FAILED / DRY RUN.\n";
 
@@ -168,6 +212,203 @@ public void onDryRun() throws Exception
 public void onRefreshAccounts() throws Exception
 {
   setStatus("[" + now() + "] Accounts: " + refreshSenderList());
+}
+
+public void onSaveConfig() throws Exception
+{
+  setStatus(saveConfig());
+}
+
+public void onLoadConfig() throws Exception
+{
+  setStatus(loadConfig());
+}
+
+// ----------------------------------------------------
+// Save / Load Config
+// ----------------------------------------------------
+
+private static final String[] CFG_TEXT =
+  { "files", "to", "cc", "bcc", "subject", "body", "fromAddress" };
+
+private String saveConfig()
+{
+  String stamp = "[" + now() + "]";
+  java.io.File f = configTarget();
+  if (f == null) return "FAILED " + stamp + " configFile is outside the station folder";
+
+  java.util.LinkedHashMap v = new java.util.LinkedHashMap();
+  v.put("files", getFiles());
+  v.put("to", getTo());
+  v.put("cc", getCc());
+  v.put("bcc", getBcc());
+  v.put("subject", getSubject());
+  v.put("body", getBody());
+  v.put("fromAddress", getFromAddress());
+  v.put("latestOnly", String.valueOf(getLatestOnly()));
+  v.put("sender", senderTag());
+
+  java.io.Writer w = null;
+  try
+  {
+    java.io.File dir = f.getParentFile();
+    if (dir != null && !dir.exists()) dir.mkdirs();
+    if (f.exists())
+    {
+      java.io.File bak = new java.io.File(f.getPath() + ".bak");
+      if (bak.exists()) bak.delete();
+      copyFile(f, bak);
+    }
+
+    w = new java.io.OutputStreamWriter(new java.io.FileOutputStream(f, false), "UTF-8");
+    w.write("# Mailer " + VERSION + " config - saved " + now() + "\n");
+    w.write("# One key=value per line. In values: \\n = new line, \\\\ = backslash.\n");
+    java.util.Iterator it = v.keySet().iterator();
+    while (it.hasNext())
+    {
+      String k = (String) it.next();
+      w.write(k + "=" + escapeValue((String) v.get(k)) + "\n");
+    }
+  }
+  catch (Exception e)
+  {
+    return "FAILED " + stamp + " can't write " + relPath(f) + ": " + e;
+  }
+  finally
+  {
+    if (w != null) try { w.close(); } catch (Exception ignore) {}
+  }
+  return "SAVED " + stamp + " config to " + relPath(f);
+}
+
+private String loadConfig()
+{
+  String stamp = "[" + now() + "]";
+  java.io.File f = configTarget();
+  if (f == null) return "FAILED " + stamp + " configFile is outside the station folder";
+  if (!f.isFile()) return "FAILED " + stamp + " no config file at " + relPath(f);
+
+  java.util.Properties p = new java.util.Properties();
+  java.io.Reader r = null;
+  try
+  {
+    r = new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8");
+    p.load(r);
+  }
+  catch (Exception e)
+  {
+    return "FAILED " + stamp + " can't read " + relPath(f) + ": " + e;
+  }
+  finally
+  {
+    if (r != null) try { r.close(); } catch (Exception ignore) {}
+  }
+
+  int n = 0;
+  if (p.containsKey("files"))       { setFiles(p.getProperty("files")); n++; }
+  if (p.containsKey("to"))          { setTo(p.getProperty("to")); n++; }
+  if (p.containsKey("cc"))          { setCc(p.getProperty("cc")); n++; }
+  if (p.containsKey("bcc"))         { setBcc(p.getProperty("bcc")); n++; }
+  if (p.containsKey("subject"))     { setSubject(p.getProperty("subject")); n++; }
+  if (p.containsKey("body"))        { setBody(p.getProperty("body")); n++; }
+  if (p.containsKey("fromAddress")) { setFromAddress(p.getProperty("fromAddress")); n++; }
+  if (p.containsKey("latestOnly"))
+  {
+    setLatestOnly("true".equalsIgnoreCase(p.getProperty("latestOnly").trim()));
+    n++;
+  }
+
+  String note = "";
+  if (p.containsKey("sender"))
+  {
+    String want = p.getProperty("sender").trim();
+    refreshSenderList(want);
+    n++;
+    if (!senderTag().equals(want))
+      note = "\nsender '" + want + "' not found, using " + senderTag() +
+        " (accounts: " + refreshSenderList() + ")";
+  }
+  else refreshSenderList();
+
+  return "LOADED " + stamp + " " + n + " setting(s) from " + relPath(f) + note;
+}
+
+// Where Save / Load Config go:
+//   configFile blank            -> file:^Mailer_Config/<name>.properties
+//   configFile is a folder      -> <that folder>/<name>.properties
+//     (an existing folder, a path ending in /, or a last part with no
+//      dot in it, e.g. file:^A_FOLDER)
+//   otherwise                   -> configFile as the file itself
+// <name> = this program's name. Null if it points outside the station
+// folder.
+private java.io.File configTarget()
+{
+  String ord = "";
+  try
+  {
+    javax.baja.naming.BOrd o = (javax.baja.naming.BOrd) get("configFile");
+    if (o != null && !o.isNull()) ord = o.toString().trim();
+  }
+  catch (Exception ignore) {}
+
+  String name = "Mailer";
+  try
+  {
+    javax.baja.sys.BComponent self = (javax.baja.sys.BComponent) getComponent();
+    if (self != null && self.getName() != null) name = self.getName();
+  }
+  catch (Throwable ignore) {}
+  String fileName = name + ".properties";
+
+  if (ord.length() == 0) ord = "file:^Mailer_Config";
+
+  String rel = stripScheme(ord);
+  boolean endsSlash = rel.endsWith("/") || rel.endsWith("\\");
+  while (rel.endsWith("/") || rel.endsWith("\\")) rel = rel.substring(0, rel.length() - 1);
+  int slash = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
+  String last = slash >= 0 ? rel.substring(slash + 1) : rel;
+
+  java.io.File f = resolveToFile(rel);
+  if (f == null) return null;
+  if (rel.length() == 0 || endsSlash || f.isDirectory() || last.indexOf('.') < 0)
+    return resolveToFile(rel.length() == 0 ? fileName : rel + "/" + fileName);
+  return f;
+}
+
+// Value -> one properties line: \ \n \r escaped, leading space kept.
+private String escapeValue(String s)
+{
+  if (s == null) return "";
+  StringBuffer b = new StringBuffer();
+  for (int i = 0; i < s.length(); i++)
+  {
+    char c = s.charAt(i);
+    if (c == '\\') b.append("\\\\");
+    else if (c == '\n') b.append("\\n");
+    else if (c == '\r') b.append("\\r");
+    else if (c == ' ' && b.length() == 0) b.append("\\ ");
+    else b.append(c);
+  }
+  return b.toString();
+}
+
+private void copyFile(java.io.File from, java.io.File to) throws Exception
+{
+  java.io.InputStream in = null;
+  java.io.OutputStream out = null;
+  try
+  {
+    in = new java.io.FileInputStream(from);
+    out = new java.io.FileOutputStream(to);
+    byte[] buf = new byte[8192];
+    int r;
+    while ((r = in.read(buf)) > 0) out.write(buf, 0, r);
+  }
+  finally
+  {
+    if (in != null) try { in.close(); } catch (Exception ignore) {}
+    if (out != null) try { out.close(); } catch (Exception ignore) {}
+  }
 }
 
 // ----------------------------------------------------
@@ -207,6 +448,13 @@ private String doSend(boolean dry)
     String line = lines[i].trim();
     if (line.length() == 0 || line.startsWith("#")) continue;
 
+    boolean latest = getLatestOnly();
+    if (line.toLowerCase().startsWith("latest:"))
+    {
+      latest = true;
+      line = line.substring(7).trim();
+    }
+
     String spec = line;
     String rcpt = null;
     int arrow = line.indexOf("=>");
@@ -226,6 +474,7 @@ private String doSend(boolean dry)
     }
 
     java.util.ArrayList found = resolveSpec(spec);
+    if (latest && found.size() > 1) found = newestOnly(found);
     if (found.isEmpty())
     {
       problems.add("not found: " + spec);
@@ -289,7 +538,8 @@ private String doSend(boolean dry)
     {
       java.io.File f = (java.io.File) fl.get(i);
       total += f.length();
-      detail.append("  ").append(relPath(f)).append(" (").append(kb(f.length())).append(")\n");
+      detail.append("  ").append(relPath(f)).append(" (").append(kb(f.length()))
+            .append(", ").append(stamp(f.lastModified())).append(")\n");
     }
     detail.append("  ").append(fl.size()).append(" file(s), ").append(kb(total));
 
@@ -477,6 +727,12 @@ private BEmailService service()
 // pick if that account still exists. Returns the account list.
 private String refreshSenderList()
 {
+  return refreshSenderList(senderTag());
+}
+
+// Same, picking 'prefer' if that account exists (else Default).
+private String refreshSenderList(String prefer)
+{
   java.util.ArrayList tags = new java.util.ArrayList();
   tags.add(DEFAULT_TAG);
 
@@ -496,10 +752,9 @@ private String refreshSenderList()
     names[i] = (String) tags.get(i);
   }
 
-  String cur = senderTag();
   int sel = 0;
   for (int i = 0; i < names.length; i++)
-    if (names[i].equals(cur)) sel = i;
+    if (names[i].equals(prefer)) sel = i;
 
   try
   {
@@ -584,6 +839,25 @@ private java.util.ArrayList resolveSpec(String spec)
   }
   sortByName(found);
   return found;
+}
+
+// Keeps only the most recently modified file (ties: last by name).
+private java.util.ArrayList newestOnly(java.util.ArrayList files)
+{
+  java.io.File best = null;
+  for (int i = 0; i < files.size(); i++)
+  {
+    java.io.File f = (java.io.File) files.get(i);
+    if (best == null || f.lastModified() >= best.lastModified()) best = f;
+  }
+  java.util.ArrayList out = new java.util.ArrayList();
+  if (best != null) out.add(best);
+  return out;
+}
+
+private String stamp(long ms)
+{
+  return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(ms));
 }
 
 // File -> path from the station home folder, with / separators.

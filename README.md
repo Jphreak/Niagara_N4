@@ -22,12 +22,14 @@ Zone Temp Delta v1.00
 - equipName: equipment folder name without the building prefix; a block in a sub-folder with no points shows the parent plus the sub-folder number, e.g. VAV_301 (2)
 - buildingNum: B# from the equipment name, or the last B# in the slot path
 
-Mailer v1.00 (N4_Versions/Mailer)
+Mailer v1.01 (N4_Versions/Mailer)
 - Emails files from the station's Files through the EmailService
 - files: one per line - a single file, a wildcard (*.csv) or a whole folder
 - Per-file recipients: "<file> => a@company.com; cc: b@company.com; bcc: c@company.com"
 - One email per line; lines with the same recipients are combined
 - cc / bcc slots go on every email
+- latestOnly (or a "latest:" line prefix) sends only the newest matching file
 - Sender drop-down lists the configured outgoing accounts
-- Dry Run shows exactly what would be sent
+- Dry Run shows exactly what would be sent (paths, sizes, dates)
+- Save Config / Load Config back up and restore the settings (configFile: a file or a folder)
 - Needs the email-rt import (javax.baja.email); slot sheet in the folder

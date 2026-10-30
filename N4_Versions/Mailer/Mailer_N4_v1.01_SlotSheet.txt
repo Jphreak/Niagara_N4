@@ -1,5 +1,7 @@
-Mailer v1.00 - Slot Sheet (complete, for a new Mailer program)
+Mailer v1.01 - Slot Sheet (complete, for a new Mailer program)
 ===============================================================
+Changes from v1.00: add latestOnly (baja:Boolean), configFile (baja:Ord),
+saveConfig and loadConfig (actions).
 
 Imports
 -------
@@ -13,7 +15,7 @@ Already on every Program (leave as is)
   execute   Action                Frozen. Does nothing on Mailer - you can
                                   set its Hidden flag to hide it.
 
-Add these 15 slots
+Add these 19 slots
 ------------------
 Flags column: r = Read Only (blank = no flags)
 
@@ -32,21 +34,36 @@ baja:String  (11)
   10  version       version        r
   11  quickGuide    quickGuide     r      multiLine=true,fieldWidth=75
 
+baja:Ord  (1)
+  #   Name          Display Name   Flags  Facets / Default
+  --  ------------  -------------  -----  -------------------------------
+  12  configFile    configFile            a file, or a folder to save
+                                          <this program's name>.properties
+                                          in; blank = file:^Mailer_Config
+                                                                   (NEW)
+
+baja:Boolean  (1)
+  #   Name          Display Name   Flags  Facets / Default
+  --  ------------  -------------  -----  -------------------------------
+  13  latestOnly    latestOnly            default false            (NEW)
+
 baja:DynamicEnum  (1)
   #   Name          Display Name   Flags  Facets
   --  ------------  -------------  -----  -------------------------------
-  12  sender        sender                none (the program fills in the
+  14  sender        sender                none (the program fills in the
                                           list: Default + each outgoing
                                           account under EmailService)
 
-Actions  (3, all void / no argument)
+Actions  (5, all void / no argument)
   #   Name             Display Name
   --  ---------------  ------------------
-  13  send             Send Now
-  14  dryRun           Dry Run - No Send
-  15  refreshAccounts  Refresh Accounts
+  15  send             Send Now
+  16  dryRun           Dry Run - No Send
+  17  refreshAccounts  Refresh Accounts
+  18  saveConfig       Save Config                          (NEW)
+  19  loadConfig       Load Config                          (NEW)
 
-(That's 11 Strings + 1 DynamicEnum + 3 Actions = 15.)
+(That's 11 Strings + 1 Ord + 1 Boolean + 1 DynamicEnum + 5 Actions = 19.)
 
 What goes in the fields
 -----------------------
@@ -67,6 +84,17 @@ What goes in the fields
   body         email text
   fromAddress  blank = the sending account's default
   sender       pick the outgoing account (Default = the first one)
+  latestOnly   true = each wildcard / folder line sends only its newest
+               file. Or start a single line with "latest:".
+               Newest is per line (B*.csv -> one file total).
+  configFile   where Save Config / Load Config keep the settings:
+               a file  file:^Backups/Mailer_Reports.properties
+               a folder file:^Backups  -> Backups/<program name>.properties
+               (blank = folder file:^Mailer_Config)
 
 After adding slots: paste the code, compile, then run Refresh Accounts
 once so the sender drop-down fills in.
+
+Moving to a new Mailer: on the old one run Save Config. On the new one
+set configFile to the same path (or give it the same name and leave
+configFile blank), compile, then run Load Config.
