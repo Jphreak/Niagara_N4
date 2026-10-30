@@ -1,0 +1,72 @@
+Mailer v1.00 - Slot Sheet (complete, for a new Mailer program)
+===============================================================
+
+Imports
+-------
+  ADD on the Imports tab:  Module email-rt   Package javax.baja.email
+  (java.util, javax.baja.sys, javax.baja.status, javax.baja.util are
+  already there by default.)
+
+Already on every Program (leave as is)
+--------------------------------------
+  code      program:ProgramCode   Frozen
+  execute   Action                Frozen. Does nothing on Mailer - you can
+                                  set its Hidden flag to hide it.
+
+Add these 15 slots
+------------------
+Flags column: r = Read Only (blank = no flags)
+
+baja:String  (11)
+  #   Name          Display Name   Flags  Facets
+  --  ------------  -------------  -----  -------------------------------
+   1  files         files                 multiLine=true,fieldWidth=100
+   2  to            to
+   3  cc            cc
+   4  bcc           bcc
+   5  subject       subject
+   6  body          body                  multiLine=true,fieldWidth=100
+   7  fromAddress   fromAddress
+   8  status        status         r      multiLine=true,fieldWidth=110
+   9  lastSent      lastSent       r
+  10  version       version        r
+  11  quickGuide    quickGuide     r      multiLine=true,fieldWidth=75
+
+baja:DynamicEnum  (1)
+  #   Name          Display Name   Flags  Facets
+  --  ------------  -------------  -----  -------------------------------
+  12  sender        sender                none (the program fills in the
+                                          list: Default + each outgoing
+                                          account under EmailService)
+
+Actions  (3, all void / no argument)
+  #   Name             Display Name
+  --  ---------------  ------------------
+  13  send             Send Now
+  14  dryRun           Dry Run - No Send
+  15  refreshAccounts  Refresh Accounts
+
+(That's 11 Strings + 1 DynamicEnum + 3 Actions = 15.)
+
+What goes in the fields
+-----------------------
+  files        one per line, # = comment
+                 file:^Csv_Logs/Report.csv              one file
+                 file:^Csv_Logs/Monthly_Reports/*.csv   wildcard
+                 file:^Csv_Logs/Monthly_Reports         every file in it
+               paths start at the top of the station's Files; a
+               wildcard only looks in the folder you name
+               add "=> addresses" for that line's own recipients:
+                 file:^Csv_Logs/Report BXXXXX.csv => a@company.com; cc: b@company.com; bcc: c@company.com
+               no prefix = To. Lines with no => go to 'to'.
+               One email per line; lines with the same recipients are
+               combined into one email.
+  to           default To for lines without =>  (a@x.com; b@x.com)
+  cc / bcc     added to EVERY email
+  subject      email subject
+  body         email text
+  fromAddress  blank = the sending account's default
+  sender       pick the outgoing account (Default = the first one)
+
+After adding slots: paste the code, compile, then run Refresh Accounts
+once so the sender drop-down fills in.
