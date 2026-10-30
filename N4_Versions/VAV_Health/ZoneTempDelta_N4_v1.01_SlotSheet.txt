@@ -1,0 +1,49 @@
+ZoneTempDelta v1.01 - Slot Sheet
+================================
+
+Imports
+-------
+  javax.baja.status.*
+
+Changes from v1.00
+------------------
+  Add:    band (StatusNumeric input), inRange (StatusBoolean output).
+  Delete: pointStatus (inRange's status replaces it).
+  All other slots unchanged.
+
+Slots, grouped by type
+----------------------
+Flags: s = Summary, r = Read Only
+"Execute On Change" = tick that box on the slot.
+
+baja:StatusNumeric
+  Name         Default        Flags  Config
+  -----------  -------------  -----  ----------------------------------
+  zoneTemp     0.0 {null}     s      Execute On Change
+  zoneTempSp   0.0 {null}     s      Execute On Change
+  band         1.25 {ok}      s      Execute On Change. Type a value or
+                                     link a point per VAV. Not set
+                                     (null/bad/<=0) -> 1.25 used;
+                                     written back if unlinked.    (NEW)
+  out          (none)         s r
+
+baja:StatusBoolean
+  Name         Default        Flags  Facets
+  -----------  -------------  -----  ----------------------------------
+  inRange      (none)         s r    trueText="In Range",
+                                     falseText="Out of Range"     (NEW)
+
+baja:String
+  Name         Default        Flags
+  -----------  -------------  -----
+  equipName    (blank)        s r
+  buildingNum  (blank)        s r
+  version      (blank)        r
+
+BQL export (for MonthlyVavHealth)
+---------------------------------
+  Export at least: buildingNum (header "Building"), equipName (header
+  "Equipment") and inRange (header containing "Range", e.g. "In Range").
+  MonthlyVavHealth scores each row from inRange: In Range {ok} = pass,
+  Out of Range {ok} = fail, a bad status = skip. Other columns (out,
+  band, temperatures) can stay in the export; they are ignored there.

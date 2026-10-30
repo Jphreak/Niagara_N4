@@ -1,0 +1,70 @@
+MonthlyVavHealth v1.00 - Slot Sheet (complete)
+==============================================
+
+Imports
+-------
+  None beyond the predefined ones (java.util, javax.baja.sys,
+  javax.baja.status, javax.baja.util). No email-rt import needed - if it
+  is still on the Imports tab from an older version, remove it.
+
+Already on every Program (leave as is)
+--------------------------------------
+  code      program:ProgramCode   Frozen
+  execute   Action                Frozen
+
+Add these slots
+---------------
+Flags: r = Read Only.  "Execute On Change" = tick that box on the slot.
+
+baja:Ord  (3)
+  Name           Default                                  Flags
+  -------------  ---------------------------------------  -----
+  samplesFolder  file:^Csv_Logs/VAV_Samples
+  reportFolder   file:^Csv_Logs/Monthly_Reports
+  archiveFolder  file:^Csv_Logs/Monthly_Reports/Archive
+
+baja:String  (8)
+  Name           Default             Flags  Facets
+  -------------  ------------------  -----  ------------------------------
+  fileMatch      ZoneTempDeltaT
+  reportName     Monthly VAV health
+  reportMonth    (blank)  yyyy-MM, blank = auto; cleared after
+                          Run Report Now uses it
+  lastReported   (blank)             r      month of the last real run
+  liveMonth      (blank)             r
+  status         (blank)             r      multiLine=true,fieldWidth=110
+  version        (blank)             r
+  quickGuide     (blank)             r      multiLine=true,fieldWidth=75
+
+baja:Integer  (1)
+  Name           Default  Facets
+  -------------  -------  ------
+  maxArchives    84       min=0     months to keep (84 = 7 years,
+                                    0 = keep forever)          (NEW)
+
+baja:AbsTime  (1)
+  Name            Default  Flags  Config
+  --------------  -------  -----  ----------------------------------------
+  reportsWritten  (none)   r      link -> Mailer's send action
+
+Actions  (2, all void / no argument)
+  Name           Display Name
+  -------------  ---------------
+  runReport      Run Report Now
+  archive        Archive Reports
+
+Wiring
+------
+  0. Trigger schedule (e.g. 1st of the month, early morning)
+       -> MonthlyVavHealth.runReport (Run Report Now).
+     Keep reportMonth blank so it reports the month just finished.
+  1. Link  MonthlyVavHealth.reportsWritten  ->  Mailer.send (Send Now).
+  2. Mailer files, one line per building (name ends in the month, so
+     wildcard + latest:; the space before * stops BXXXXX matching BXXXXX1):
+       latest: file:^Csv_Logs/Monthly_Reports/Monthly VAV health BXXXXX *.csv => a@company.com; cc: b@company.com
+       latest: file:^Csv_Logs/Monthly_Reports/Monthly VAV health BYYYYY *.csv => c@company.com
+  3. Leave the Mailer's subject / body blank for
+       Automated Report - Monthly VAV health BXXXXX 2026-10
+  4. Run Save Config on the Mailer to back that up.
+  While testing, point the Mailer's lines at your own address (or use
+  its Dry Run) - every Run Report Now fires reportsWritten.

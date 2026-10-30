@@ -2,33 +2,51 @@
 ================================================================================
 Program: ZoneTempDelta - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.00
-Date:    2026-10-27
+Version: v1.01
+Date:    2026-10-30
 
 Changes
 -------
   v1.00  Initial release.
+  v1.01  Added band input (StatusNumeric, type a value or link a point
+         per VAV; not set = 1.25, written back when unlinked) and
+         inRange output (true when |out| <= band; {fault} when a temp
+         input is bad). Removed pointStatus - inRange's status carries
+         input health. equipName messages without the "?" prefix:
+         "No Points Found", "No Parent Folder", "Block Not Found",
+         "Error: ...".
 
 Purpose
 -------
 out = zoneTemp - zoneTempSp
   Positive -> zone is above setpoint.
   Negative -> zone is below setpoint.
-pointStatus flags a bad input. equipName names the equipment.
-buildingNum names the building.
-Runs on change of either input, and once on start. No logging.
+inRange is true when |out| <= band; its status is {fault} when a temp
+input is bad.
+equipName names the equipment. buildingNum names the building.
+Runs on change of any input, and once on start. No logging.
 
 Outputs
 -------
-  Both inputs ok     -> out         = difference, status ok
-                        pointStatus = false, status ok
-  Either input bad   -> out         = 0, status null
-                        pointStatus = true, status fault
+  Both inputs ok     -> out     = difference, status ok
+                        inRange = |out| <= band, status ok
+  Either input bad   -> out     = 0, status null
+                        inRange = false, status fault
   Bad = fault, down, stale, disabled, null, or slot missing/unlinked.
   A flag set alongside good flags still counts (overridden + stale = bad).
   Overridden and alarm/unackedAlarm flags alone are NOT treated as bad.
 
-  Both outputs are rewritten as whole new values on every run, so a
+  inRange (band is symmetric: within +/- band of setpoint)
+    Temps ok            -> |out| <= band : true  {ok}
+                           |out| >  band : false {ok}
+    Temps bad           -> false {fault}
+  band is a StatusNumeric input: type a value or link a point to set it
+  per VAV. If band is not set (null, bad status or <= 0), 1.25 is used.
+  Unlinked: 1.25 {ok} is written into band so it shows on the sheet.
+  Linked:   band is left alone (the link owns it); 1.25 is used until
+            the linked point is good again.
+
+  All outputs are rewritten as whole new values on every run, so a
   copied block never keeps the source block's state.
 
   equipName
@@ -48,9 +66,11 @@ Outputs
     moved block picks up its new location.
 
     If no name can be found, equipName shows why:
-      ?getComponent ...   could not get this block
-      ?no parent          could not get the block's folder
-      ?no points found    walked to the top without finding a point
+      Block Not Found     could not get this block
+      No Parent Folder    could not get the block's folder
+      No Points Found     walked to the top without finding a point
+                          (e.g. a spare block in a Programs folder)
+      Error: ...          anything else
 
   buildingNum
     1. If the equipment name starts with B + digits + "_", that
@@ -83,16 +103,22 @@ Slot Sheet
                                     default status null
   zoneTempSp   baja:StatusNumeric   Summary, Execute On Change,
                                     default status null
+  band         baja:StatusNumeric   Summary, Execute On Change,
+                                    default 1.25 {ok}
   out          baja:StatusNumeric   Summary, Read Only
-  pointStatus  baja:StatusBoolean   Summary, Read Only,
-                                    facets trueText=" " falseText="Ok"
+  inRange      baja:StatusBoolean   Summary, Read Only,
+                                    facets trueText="In Range"
+                                    falseText="Out of Range"
   equipName    baja:String          Summary, Read Only
   buildingNum  baja:String          Summary, Read Only
   version      baja:String          Read Only
 ================================================================================
 */
 
-private static final String VERSION = "v1.00";
+private static final String VERSION = "v1.01";
+
+// Used when band is not set (null, bad status or <= 0).
+private static final double DEFAULT_BAND = 1.25;
 
 // Results of one findEquipName() pass. Only used within a single run.
 private String foundEquip;
@@ -113,15 +139,22 @@ public void onExecute() throws Exception
              || !zt.getStatus().isValid()
              || !sp.getStatus().isValid();
 
+  BStatusNumeric bd = getBand();
+  boolean bandSet = bd != null && bd.getStatus().isValid() && bd.getValue() > 0;
+  double band = bandSet ? bd.getValue() : DEFAULT_BAND;
+  if (!bandSet && !isSlotLinked("band"))
+    setBand(new BStatusNumeric(DEFAULT_BAND, BStatus.ok));
+
   if (bad)
   {
     setOut(new BStatusNumeric(0, BStatus.nullStatus));
-    setPointStatus(new BStatusBoolean(true, BStatus.fault));
+    setInRange(new BStatusBoolean(false, BStatus.fault));
   }
   else
   {
-    setOut(new BStatusNumeric(zt.getValue() - sp.getValue(), BStatus.ok));
-    setPointStatus(new BStatusBoolean(false, BStatus.ok));
+    double delta = zt.getValue() - sp.getValue();
+    setOut(new BStatusNumeric(delta, BStatus.ok));
+    setInRange(new BStatusBoolean(Math.abs(delta) <= band + 1e-9, BStatus.ok));
   }
 
   updateNames();
@@ -129,6 +162,24 @@ public void onExecute() throws Exception
 
 public void onStop() throws Exception
 {
+}
+
+// True if the named slot on this block has a link into it.
+private boolean isSlotLinked(String name)
+{
+  try
+  {
+    javax.baja.sys.BComponent self = (javax.baja.sys.BComponent) getComponent();
+    javax.baja.sys.Slot slot = self.getSlot(name);
+    if (slot == null) return false;
+    javax.baja.sys.BLink[] links = self.getLinks(slot);
+    return links != null && links.length > 0;
+  }
+  catch (Throwable t)
+  {
+    // Can't tell: treat as linked so we never fight a link.
+    return true;
+  }
 }
 
 // ----------------------------------------------------
@@ -147,7 +198,7 @@ private void updateNames()
   }
   catch (Throwable t)
   {
-    foundEquip = "?error " + t;
+    foundEquip = "Error: " + t;
   }
 
   String cur = getEquipName();
@@ -170,19 +221,19 @@ private void findNames()
   }
   catch (Throwable t)
   {
-    foundEquip = "?getComponent " + t;
+    foundEquip = "Block Not Found";
     return;
   }
   if (self == null)
   {
-    foundEquip = "?getComponent null";
+    foundEquip = "Block Not Found";
     return;
   }
 
   javax.baja.sys.BComponent folder = parentOf(self);
   if (folder == null)
   {
-    foundEquip = "?no parent";
+    foundEquip = "No Parent Folder";
     foundBldg  = lastBuildingInPath(self);
     return;
   }
@@ -205,7 +256,7 @@ private void findNames()
     folder = parentOf(folder);
   }
 
-  foundEquip = "?no points found";
+  foundEquip = "No Points Found";
   foundBldg  = lastBuildingInPath(self);
 }
 
