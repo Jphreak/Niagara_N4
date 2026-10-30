@@ -15,12 +15,22 @@ Linker v3.2 (Direct, BQL, CSV)
 
 *** Note The above 2 programs also have the ability to reverse the others' linking ***
 
-Zone Temp Delta v1.00
+VAV Health (N4_Versions/VAV_Health)
+Zone Temp Delta v1.01
 - out = zoneTemp - zoneTempSp (positive = above setpoint)
-- pointStatus faults if either input is fault, down, stale, disabled or null
-- Executes on change of either input
+- band input (type a value or link a point per VAV; not set = 1.25)
+- inRange = |out| <= band; {fault} when either temp input is fault, down, stale, disabled or null
 - equipName: equipment folder name without the building prefix; a block in a sub-folder with no points shows the parent plus the sub-folder number, e.g. VAV_301 (2)
 - buildingNum: B# from the equipment name, or the last B# in the slot path
+
+Monthly VAV Health v1.00
+- Reads the ZoneTempDeltaT sample CSVs (BQL export 3x a day) and writes one monthly report per building
+- Pass / fail / skip per VAV from the In Range column; % passes and % fails exclude skips
+- Building Score and % Skips summary at the top of each report, totals row at the bottom
+- Run Report Now from a trigger schedule (blank reportMonth = last month; a set reportMonth is used once, then cleared)
+- reportsWritten output -> link to Mailer Send Now
+- Archive by year and building, daily samples archived after their month is reported
+- maxArchives retention (default 84 months = 7 years)
 
 Mailer v1.02 (N4_Versions/Mailer)
 - Emails files from the station's Files through the EmailService
