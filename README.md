@@ -20,7 +20,7 @@ Zone Temp Delta v1.01
 - out = zoneTemp - zoneTempSp (positive = above setpoint)
 - band input (type a value or link a point per VAV; not set = 1.25)
 - inRange = |out| <= band; {fault} when either temp input is fault, down, stale, disabled or null
-- equipName: equipment folder name without the building prefix; a block in a sub-folder with no points shows the parent plus the sub-folder number, e.g. VAV_301 (2)
+- equipName: equipment folder name without the building prefix; a block in a sub-folder with no points shows the parent plus the sub-folder number, e.g. VAV_102 (2)
 - buildingNum: B# from the equipment name, or the last B# in the slot path
 
 Monthly VAV Health v1.00

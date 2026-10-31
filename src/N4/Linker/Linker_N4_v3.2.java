@@ -26,7 +26,7 @@ Changes
          - verify now runs through the same path as execute/dryRun and
            writes a FOUND/MISSING row per link to the results CSV.
   v3.1   Slot names in ords are escaped automatically, so names can be
-         typed as Workbench shows them ("VAV B-31" -> "VAV$20B$2d31").
+         typed as Workbench shows them ("VAV X-01" -> "VAV$20X$2d01").
          Already-escaped names ($20, $2d, $uxxxx) pass through unchanged.
          Only the slot: part of an ord is touched (bql:, file:, h: are
          left alone). Applies to linkSource, both CSV
@@ -182,7 +182,7 @@ private static final String QUICK_GUIDE =
   "    column in CSV mode.\n" +
   "  - Reverse removes the links instead of creating them.\n" +
   "  - Ords can use slot names as Workbench shows them, e.g.\n" +
-  "    slot:/Drivers/BacnetNetwork/VAV B-31/points - spaces,\n" +
+  "    slot:/Drivers/BacnetNetwork/VAV X-01/points - spaces,\n" +
   "    dashes etc. are escaped automatically ($20, $2d).\n" +
   "  - Every link is checked: both slots must exist before it is\n" +
   "    added, and it is read back after. A link the framework drops\n" +
@@ -942,7 +942,7 @@ private String normalizeOrd(String ordStr)
 // ----------------------------------------------------
 // Niagara slot names allow only ASCII letters, digits and '_' (and must
 // start with a letter). Anything else is stored escaped as $xx (two hex
-// digits) or $uxxxx: "VAV B-31" is really "VAV$20B$2d31". These helpers
+// digits) or $uxxxx: "VAV X-01" is really "VAV$20X$2d01". These helpers
 // escape the slot: part of an ord so names can be typed as Workbench
 // displays them. Already-escaped sequences are copied through as-is, so
 // escaped, unescaped and mixed input all end up the same.

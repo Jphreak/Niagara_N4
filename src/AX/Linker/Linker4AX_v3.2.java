@@ -15,8 +15,8 @@ Changes
 -------
   v3.1-AX  Slot names in ords are escaped automatically. A CSV row or
            linkSource line can now use the names exactly as Workbench
-           displays them ("slot:/Drivers/BacnetNetwork/VAV B-31/...")
-           instead of the escaped form ("VAV$20B$2d31"). Already-escaped
+           displays them ("slot:/Drivers/BacnetNetwork/VAV X-01/...")
+           instead of the escaped form ("VAV$20X$2d01"). Already-escaped
            names ($20, $2d, $uXXXX) pass through unchanged, so existing
            CSVs keep working. Only the slot: part of an ord is touched
            (bql:, file:, h: are left alone). Applies to linkSource, both
@@ -190,7 +190,7 @@ private static final String QUICK_GUIDE =
   "    blank one) defaults to \"out\" - same for a blank Slot1/Slot2\n" +
   "    column in CSV mode.\n" +
   "  - Ords can use slot names as Workbench shows them, e.g.\n" +
-  "    slot:/Drivers/BacnetNetwork/VAV B-31/IconFolder - spaces,\n" +
+  "    slot:/Drivers/BacnetNetwork/VAV X-01/IconFolder - spaces,\n" +
   "    dashes etc. are escaped automatically ($20, $2d). Already-\n" +
   "    escaped names are left as they are.\n" +
   "  - Reverse removes the links instead of creating them.\n" +
@@ -1072,7 +1072,7 @@ private String normalizeOrd(String ordStr)
 // ----------------------------------------------------
 // Niagara slot names allow only ASCII letters, digits and '_' (and must
 // start with a letter). Anything else is stored escaped as $xx (two hex
-// digits) or $uxxxx: "VAV B-31" is really "VAV$20B$2d31". These helpers
+// digits) or $uxxxx: "VAV X-01" is really "VAV$20X$2d01". These helpers
 // escape the slot: part of an ord so names can be typed as Workbench
 // displays them. Already-escaped sequences are copied through as-is, so
 // escaped, unescaped and mixed input all end up the same.

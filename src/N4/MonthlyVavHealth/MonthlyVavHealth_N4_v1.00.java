@@ -42,7 +42,7 @@ Sample files
            Expected export:
              Building,Equipment,Delta,Band,Zone Temperature,
              Effective Setpoint,In Range
-             BXXXXX,VAV_201,-0.27,1.25,20.73,21.00,In Range {ok}
+             BXXXXX,VAV_101,-0.27,1.25,20.73,21.00,In Range {ok}
 
 Report (one file per building)
 ------------------------------
@@ -59,7 +59,7 @@ Report (one file per building)
                                        <- blank line
   Building Number,Equipment Name,Number of Samples,Number of Passes,
   Number of Fails,Number of Skips,% Passes,% Fails,% Skips
-  BXXXXX,VAV_201,93,88,2,3,97.8,2.2,3.2
+  BXXXXX,VAV_101,93,88,2,3,97.8,2.2,3.2
   ...
   BXXXXX,Building Score,<totals>,...  <- same totals as the summary
 
@@ -934,7 +934,7 @@ private String fmt(double v, int dp)
   return String.format(java.util.Locale.US, "%." + dp + "f", v);
 }
 
-// Natural order: VAV_2 before VAV_10, "VAV_117 (2)" after "VAV_117".
+// Natural order: VAV_2 before VAV_10, "VAV_103 (2)" after "VAV_103".
 private void sortNatural(java.util.ArrayList list)
 {
   for (int i = 1; i < list.size(); i++)

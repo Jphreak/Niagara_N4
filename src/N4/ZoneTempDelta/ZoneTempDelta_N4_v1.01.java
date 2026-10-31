@@ -74,22 +74,22 @@ Outputs
 
   buildingNum
     1. If the equipment name starts with B + digits + "_", that
-       B-number is used: BXXXXX_VAV_301 -> BXXXXX.
+       B-number is used: BXXXXX_VAV_102 -> BXXXXX.
     2. Otherwise, the last B-number in the equipment's slot path is
        used (the block's own path if no equipment was found). A
        B-number is B + digits, not preceded by a letter or digit, so
-       OT_BXXXXX_01 and BXXXXX_1234Lakeontario both give BXXXXX.
+       CTRL_BXXXXX_01 and BXXXXX_1234MainSt both give BXXXXX.
     3. Empty if neither finds one.
     Always returned in upper case.
 
   Examples
-    .../VAV/BXXXXX_VAV_201/zoneTempDelta
-        equipName VAV_201,        buildingNum BXXXXX
-    .../VAV/BXXXXX_VAV_301/BYYYYY_VAV_301_Folder_2/zoneTempDelta
-        equipName VAV_301 (2),    buildingNum BXXXXX (from the equipment,
+    .../VAV/BXXXXX_VAV_101/zoneTempDelta
+        equipName VAV_101,        buildingNum BXXXXX
+    .../VAV/BXXXXX_VAV_102/BYYYYY_VAV_102_Folder_2/zoneTempDelta
+        equipName VAV_102 (2),    buildingNum BXXXXX (from the equipment,
                                   not the sub-folder)
-    .../BXXXXX_1234Lakeontario/OT_BXXXXX_01/points/VAV/VAV_5/zoneTempDelta
-        equipName VAV_5,          buildingNum BXXXXX (from the path)
+    .../BXXXXX_1234MainSt/CTRL_BXXXXX_01/points/VAV/VAV_01/zoneTempDelta
+        equipName VAV_01,         buildingNum BXXXXX (from the path)
 
 Imports
 -------
@@ -315,7 +315,7 @@ private boolean hasPoints(javax.baja.sys.BComponent c,
   return false;
 }
 
-// "BXXXXX_VAV_301" -> "BXXXXX". Null if the name has no B + digits + "_"
+// "BXXXXX_VAV_102" -> "BXXXXX". Null if the name has no B + digits + "_"
 // prefix.
 private String buildingPrefix(String n)
 {
@@ -327,7 +327,7 @@ private String buildingPrefix(String n)
 
 // Last B-number in c's slot path. A B-number is B + digits, not
 // preceded by a letter or digit and not followed by a digit.
-// ".../BXXXXX_1234Lakeontario/OT_BXXXXX_01/points/VAV" -> "BXXXXX".
+// ".../BXXXXX_1234MainSt/CTRL_BXXXXX_01/points/VAV" -> "BXXXXX".
 // Empty if none.
 private String lastBuildingInPath(javax.baja.sys.BComponent c)
 {
@@ -348,7 +348,7 @@ private String lastBuildingInPath(javax.baja.sys.BComponent c)
 }
 
 // Last run of digits in a name, without leading zeros.
-// "BXXXXX_VAV_301_Folder_2" -> "2", "Folder_03" -> "3", "Logic" -> null.
+// "BXXXXX_VAV_102_Folder_2" -> "2", "Folder_03" -> "3", "Logic" -> null.
 private String lastNumber(String n)
 {
   if (n == null) return null;
@@ -368,7 +368,7 @@ private String lastNumber(String n)
   }
 }
 
-// "BXXXXX_VAV_301" -> "VAV_301". Only strips B + digits + "_" at the
+// "BXXXXX_VAV_102" -> "VAV_102". Only strips B + digits + "_" at the
 // start; a name that would end up empty is returned unchanged.
 private String stripBuilding(String n)
 {
@@ -376,7 +376,7 @@ private String stripBuilding(String n)
   return t.length() > 0 ? t : n;
 }
 
-// "VAV$20B$2d31" -> "VAV B-31". Handles $xx and $uxxxx. Bad sequences
+// "VAV$20X$2d01" -> "VAV X-01". Handles $xx and $uxxxx. Bad sequences
 // are copied through unchanged.
 private String unescapeName(String s)
 {
