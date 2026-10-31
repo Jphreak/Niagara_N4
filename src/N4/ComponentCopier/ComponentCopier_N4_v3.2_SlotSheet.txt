@@ -1,0 +1,92 @@
+ComponentCopier v3.2 - Slot Sheet (complete, for a new ComponentCopier program)
+===============================================================================
+
+Imports
+-------
+  ADD on the Imports tab:
+    Module baja        Package javax.baja.space
+    Module baja        Package javax.baja.collection
+    Module baja        Package javax.baja.job
+  (java.util, javax.baja.sys, javax.baja.status, javax.baja.util are
+  already there by default.)
+
+Already on every Program (leave as is)
+--------------------------------------
+  code      program:ProgramCode   Frozen
+  execute   Action                Frozen. Runs the configured destinationMode.
+
+Add these 20 slots
+------------------
+Flags column: r = Read Only, s = Summary (blank = no flags)
+
+baja:String  (4)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+   1  version               version                         rs     fieldWidth=5
+   2  quickGuide            quickGuide                      r      multiLine=true, fieldWidth=75
+   3  status                status                          rs     multiLine=true, fieldWidth=110
+   4  componentSource       Source(s) to Copy               s      multiLine=true, fieldWidth=100
+
+baja:Ord  (7)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+   5  copyTo                Destination Target Location(s)         default blank
+   6  linksCsvPath          Autolinking Path                       blank = no link phase
+   7  logFilePath           logFilePath                     s      blank = file:^logs/ComponentCopier.log
+   8  resultsCsvPath        resultsCsvPath                  s      blank = file:^logs/ComponentCopier_results.csv
+   9  linkerLogPath         linkerLogPath                          blank = file:^logs/ComponentCopier_linker.log
+  10  linkerResultsCsvPath  linkerResultsCsvPath                   blank = file:^logs/ComponentCopier_linker_results.csv
+  11  sampleCsvPath         sampleCsvPath                          blank = file:^logs/ComponentCopier_SAMPLE.csv
+                                                                      (links sample = same name + _links)
+
+baja:Integer  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  12  maxArchives           Max Archives to Keep                   min=0, max=30, fieldWidth=5
+                                                                      default 10 (0 = keep all)
+
+baja:Boolean  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  13  keepAllLinks          Keep All Incoming Links         s      default false
+
+baja:StatusEnum  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  14  destinationMode       destinationMode                        range = {Direct=0, BQL=1, CSV=2}, default BQL
+
+Actions  (6, all void / no argument)
+  #   Name                  Display Name
+  --  --------------------  ------------------------------
+  15  dryRun                Dry Run - No Changes
+  16  verify                Verify - Audit
+  17  reverse               Reverse Changes
+  18  cancel                Cancel Request
+  19  pruneArchives         Remove Old Logs
+  20  createSampleCsv       Create Sample CSV
+
+(That's 4 String + 7 Ord + 1 Integer + 1 Boolean + 1 StatusEnum + 6 Actions = 20.)
+
+What goes in the fields
+-----------------------
+  destinationMode  Direct = copyTo is one destination
+                   BQL    = copyTo is a query, each row a destination
+                   CSV    = copyTo is a CSV, one destination ord per row
+  componentSource  one source ord per line; every source goes to every
+                   destination. A trailing * copies the folder's
+                   CONTENTS instead of the folder:
+                     station:|slot:/Drivers/Templates/BXXXXX_VAV/*
+  copyTo           Direct: station:|slot:/Drivers/BacnetNetwork/BXXXXX_VAV_01/points
+                   BQL:    station:|slot:/Drivers|bql:select * from bacnet:BacnetPointDeviceExt where name = 'points'
+                   CSV:    file:^Csv_Logs/Destinations.csv
+  linksCsvPath     optional 5-column links CSV (same format as Linker)
+                   run after the copy. componentSource and copyTo both
+                   blank + linksCsvPath set = links only.
+  keepAllLinks     true = keep incoming links on the copied component
+  maxArchives      timestamped log / results archives kept per file
+
+Display names: set them with Rename Display Name on each slot
+(Workbench keeps them in the displayNames slot).
+
+After adding slots: paste the code and compile. Run Dry Run, then
+Verify, before Execute.

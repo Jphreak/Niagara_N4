@@ -1,0 +1,87 @@
+Linker4AX v3.2-AX - Slot Sheet (complete, for a new Linker4AX program)
+======================================================================
+
+Imports
+-------
+  None to add. The code uses full class names (javax.baja.naming.BOrd
+  etc.), so the default program;baja dependencies are enough.
+
+Already on every Program (leave as is)
+--------------------------------------
+  code      program:ProgramCode   Frozen
+  execute   Action                Frozen. Runs the configured operationMode.
+
+Add these 18 slots
+------------------
+Flags column: r = Read Only, s = Summary (blank = no flags)
+
+baja:String  (6)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+   1  version               version                         r
+   2  quickGuide            quickGuide                      r      multiLine=true, fieldWidth=100
+   3  status                status                          r      multiLine=true, fieldWidth=100
+   4  sourceNote            Note:                           r      multiLine=true, fieldWidth=100
+                                                                      static help - type the text below in once
+   5  linkSource            Source                                 multiLine=true, fieldWidth=100,
+                                                                      units="slot:/TEST/point,slot"
+   6  targetSlot            Target Slot                            blank source slot = out
+
+baja:Ord  (4)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+   7  targetOrd             Target, BQL or CSV                     default blank
+   8  logFilePath           logFilePath                            blank = file:^logs/LinkCreator.log
+   9  resultsCsvPath        resultsCsvPath                         blank = file:^logs/LinkCreator_results.csv
+  10  sampleCsvPath         sampleCsvPath                          blank = file:^logs/LinkCreator_SAMPLE.csv
+
+baja:Integer  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  11  maxArchives           Max Archives to Keep                   default 10 (0 = keep all)
+
+baja:StatusEnum  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  12  operationMode         operationMode                          range = {Direct=0, BQL=1, CSV=2}, default BQL
+
+Actions  (6, all void / no argument)
+  #   Name                  Display Name
+  --  --------------------  ------------------------------
+  13  dryRun                Dry Run - No Changes
+  14  verify                Verify - Audit
+  15  reverse               Reverse Changes
+  16  cancel                Cancel Request
+  17  pruneArchives         Remove Old Logs
+  18  createSampleCsv       Create Sample CSV
+
+(That's 6 String + 4 Ord + 1 Integer + 1 StatusEnum + 6 Actions = 18.)
+
+What goes in the fields
+-----------------------
+  operationMode  Direct = every source linked to targetOrd / targetSlot
+                 BQL    = every source linked to each query row
+                 CSV    = pairs from a 5-column CSV at targetOrd:
+                          BOrd1, Slot1, Direction (> or <), BOrd2, Slot2
+  linkSource     one "ord,slot" per line; first line = primary source
+                   slot:/Test_Folder/BXXXXX_OAT,out
+                 no slot = out. Names can be typed as Workbench shows
+                 them (VAV X-01 is escaped for you).
+  targetOrd      Direct: the target component
+                 BQL:    station:|slot:/Drivers|bql:select * from control:ControlPoint where name = 'OAT'
+                 CSV:    file:^Csv_Logs/Links.csv
+  targetSlot     slot on the target the link writes to (e.g. in10)
+  sourceNote     (the code never writes it) - type this in before setting Read Only:
+                   Source holds one "ord,slot" pair per line. (i.e. slot:/TEST/point,slot)
+                   The first non-blank line is the primary source;
+                   Further non-blank lines are extra sources (lines starting with # are ignored).
+                   Omit the slot (just the ord, no comma) and "out" is assumed.
+
+                   In Direct/BQL mode every source is linked to the target.
+  maxArchives    timestamped log / results archives kept per file
+
+Display names: set them with Rename Display Name on each slot
+(Workbench keeps them in the displayNames slot).
+
+After adding slots: paste the code and compile. Run Dry Run, then
+Verify, before Execute.

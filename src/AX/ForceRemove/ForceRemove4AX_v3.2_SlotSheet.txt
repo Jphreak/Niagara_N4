@@ -1,0 +1,94 @@
+ForceRemove4AX v3.2-AX - Slot Sheet (complete, for a new ForceRemove4AX program)
+================================================================================
+
+Imports
+-------
+  None to add. The code uses full class names (javax.baja.naming.BOrd
+  etc.), so the default program;baja dependencies are enough.
+
+Already on every Program (leave as is)
+--------------------------------------
+  code      program:ProgramCode   Frozen
+  execute   Action                Frozen. Runs the configured operationMode.
+
+Add these 18 slots
+------------------
+Flags column: r = Read Only, s = Summary (blank = no flags)
+
+baja:String  (6)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+   1  version               version                         r      fieldWidth=10
+   2  quickGuide            quickGuide                      r      multiLine=true, fieldWidth=110
+   3  status                status                          r      multiLine=true, fieldWidth=110
+   4  targetList            targetList                             multiLine=true, fieldWidth=110
+   5  nameFilter            nameFilter
+   6  typeFilter            typeFilter
+
+baja:Ord  (4)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+   7  targetOrd             targetOrd                              default blank - see note below
+   8  logFilePath           logFilePath                            blank = file:^logs/ForceRemove.log
+   9  resultsCsvPath        resultsCsvPath                         blank = file:^logs/ForceRemove_results.csv
+  10  sampleCsvPath         sampleCsvPath                          blank = file:^logs/ForceRemove_SAMPLE.csv
+
+baja:Integer  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  11  maxArchives           Max Archives to Keep                   min=0, max=10, fieldWidth=5
+                                                                      default 10 (0 = keep all)
+
+baja:DynamicEnum  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  12  operationMode         operationMode                          range = {Direct=0, BQL=1, CSV=2}, default BQL
+
+baja:Folder  (1)
+  #   Name                  Display Name                    Flags  Facets / Default
+  --  --------------------  ------------------------------  -----  ------------------------------
+  13  ForceRemoveBackup     ForceRemoveBackup                      holding folder for reverse backups
+                                                                      (the program adds it itself if it can;
+                                                                      add it here so it always exists)
+
+Actions  (5, all void / no argument)
+  #   Name                  Display Name
+  --  --------------------  ------------------------------
+  14  dryRun                Dry Run - No Changes
+  15  reverse               Reverse Removal
+  16  cancel                Cancel Request
+  17  pruneArchives         Remove Old Logs
+  18  createSampleCsv       Create Sample CSV
+
+(That's 6 String + 4 Ord + 1 Integer + 1 DynamicEnum + 1 Folder + 5 Actions = 18.)
+
+What goes in the fields
+-----------------------
+  operationMode  Direct = walk each target and delete matching items
+                 BQL    = targetOrd is a BQL query, each row a target
+                 CSV    = targetOrd is a one-column CSV (header Ord)
+  targetOrd      Direct: a root; BQL: the query; CSV: the file
+                   station:|slot:/Drivers/BacnetNetwork/BXXXXX_VAV_01
+                   station:|slot:/Drivers|bql:select * from control:ControlPoint where name like 'TEST*'
+                   file:^Csv_Logs/RemoveList.csv
+                 Leave it blank in a template bog. Never ship a whole-
+                 station query here (e.g. select * from baja:Component)
+                 - Execute would hit every unprotected component.
+  targetList     Direct only: one ord per line, # = comment. Used
+                 instead of targetOrd when not empty.
+  nameFilter     only items whose name CONTAINS this text (case-
+                 sensitive, no wildcards); blank = all. Applied to
+                 every row in BQL/CSV mode too.
+  typeFilter     exact module:Type, e.g. control:NumericWritable;
+                 blank = all. Not applied to folders.
+  maxArchives    timestamped log / results archives kept per file
+
+  Protected (never deleted, any mode, Dry Run too): the station root,
+  the Services tree, the /Drivers container itself, this program, its
+  backup folder, and the folder it lives in with everything inside.
+
+Display names: set them with Rename Display Name on each slot
+(Workbench keeps them in the displayNames slot).
+
+After adding slots: paste the code and compile. Back up the station
+(.dist) and always run Dry Run before Execute.
