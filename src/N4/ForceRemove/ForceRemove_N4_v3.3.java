@@ -2,8 +2,8 @@
 ================================================================================
 Program: ForceRemove (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v3.2
-Date:    2026-10-01
+Version: v3.3
+Date:    2026-10-31
 
 Changes
 -------
@@ -37,6 +37,19 @@ Changes
          and each replayed link is read back; a link the framework dropped,
          left inactive or fault-flagged is removed and logged as REVERSE
          LINK FAILED instead of being counted in LinksRestored.
+  v3.3   Common helper block (testing/Common, c1):
+         - Paths outside the station folder are refused with the reason in
+           status; "local:|file:^..." ords are accepted.
+         - CSV fields: text a spreadsheet would run as a formula (= + - @
+           first) gets a leading '.
+         - Error text unwraps reflection wrappers to show the real cause.
+         - Links are made by one shared routine (createLink) and named by one
+           formula (buildLinkName) in ForceRemove, Linker and Component Copier.
+         - reverse restores each link under its original name (new LinkName
+           column in logs/ForceRemove_reverse_links.csv). v3.2 records have no
+           name: those links get the Linker / Copier name, so Linker and Copier
+           verify and reverse find restored links. Links a restored component
+           already carries are no longer duplicated.
 
 Purpose
 -------
@@ -117,8 +130,8 @@ Quick start
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("ForceRemove");
 
-private static final String VERSION = "v3.2";
-
+private static final String VERSION = "v3.3";
+private static final String LOG_TAG = "ForceRemove";
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
@@ -202,7 +215,7 @@ private static final String QUICK_GUIDE =
   "    dashes etc. are escaped automatically ($20, $2d).\n" +
   "  - Reverse only replays a captured link when both slots exist,\n" +
   "    and reads each one back; a dead link is removed and logged as\n" +
-  "    REVERSE LINK FAILED.\n" +
+  "    REVERSE LINK FAILED. A restored link keeps its original name.\n" +
   "  - maxArchives caps how many timestamped log/CSV archives are\n" +
   "    kept (default 10). 0 = keep all.";
 
@@ -212,14 +225,13 @@ private String now()
     .format(new java.util.Date());
 }
 
-// ----------------------------------------------------
-// Exception describer - ported from LinkCreator/Component Copier.
-// Build a human-readable reason from an exception that is NEVER empty
-// or "null".
-// ----------------------------------------------------
+// Readable reason from an exception - never empty or "null". Unwraps
+// reflection wrappers so the real cause shows.
 private String describeException(Throwable t)
 {
   if (t == null) return "unknown error";
+  while (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+    t = t.getCause();
 
   StringBuilder sb = new StringBuilder();
   String cls = t.getClass().getSimpleName();
@@ -239,7 +251,6 @@ private String describeException(Throwable t)
       sb.append(": ").append(cmsg.trim());
     sb.append("]");
   }
-
   return sb.toString();
 }
 
@@ -277,18 +288,9 @@ private volatile boolean cancelRequested = false;
 
 private boolean isCancelled() { return cancelRequested; }
 
-// ----------------------------------------------------
-// Slot readers
-// ----------------------------------------------------
 private String resolveLogPath()
 {
-  try
-  {
-    javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) get("logFilePath");
-    if (ord != null && !ord.isNull()) return ord.toString().trim();
-  }
-  catch (Exception ignore) {}
-  return "file:^logs/ForceRemove.log";
+  return ordSlot("logFilePath", "file:^logs/" + LOG_TAG + ".log");
 }
 
 // Build a timestamped archive path from the given active file path.
@@ -356,36 +358,27 @@ private String resolveManifestPath()
 
 // The captured-links CSV: inbound + outbound links of each backed-up
 // component, in the 5-column shape LinkCreator uses
-// (BOrd1,Slot1,Direction,BOrd2,Slot2), so reverse can replay them with
+// (BOrd1,Slot1,Direction,BOrd2,Slot2,LinkName), so reverse can replay them with
 // the same link-creation logic. Lives next to the manifest.
 private String resolveReverseLinksPath()
 {
   return "file:^logs/ForceRemove_reverse_links.csv";
 }
 
-// Read the maxArchives slot. Returns 10 if missing/unreadable. 0 (or
-// negative) means "keep all archives, never prune".
 private int resolveMaxArchives()
 {
-  try
-  {
-    Object val = get("maxArchives");
-    if (val instanceof javax.baja.sys.BInteger)
-      return ((javax.baja.sys.BInteger) val).getInt();
-  }
-  catch (Exception ignore) {}
-  return 10;
+  return intSlot("maxArchives", 10);
 }
 
-// Reflection-based setter for the version slot -- avoids a hard
-// compile-time dependency on a generated setVersion() method.
+// Reflection-based setter for the version slot - no hard dependency on the
+// generated setVersion() signature.
 private void updateVersion()
 {
   try
   {
     java.lang.reflect.Method m = this.getClass().getMethod(
       "setVersion", new Class[]{ String.class });
-    m.invoke(this, VERSION);
+    m.invoke(this, new Object[]{ VERSION });
   }
   catch (Exception ignore)
   {
@@ -393,21 +386,20 @@ private void updateVersion()
     {
       java.lang.reflect.Method m = this.getClass().getMethod(
         "setVersion", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(VERSION));
+      m.invoke(this, new Object[]{ javax.baja.sys.BString.make(VERSION) });
     }
     catch (Exception ignore2) {}
   }
 }
 
-// Reflection-based setter for the quickGuide slot. Same pattern as
-// updateVersion().
+// Same pattern for the quickGuide slot.
 private void updateQuickGuide()
 {
   try
   {
     java.lang.reflect.Method m = this.getClass().getMethod(
       "setQuickGuide", new Class[]{ String.class });
-    m.invoke(this, QUICK_GUIDE);
+    m.invoke(this, new Object[]{ QUICK_GUIDE });
   }
   catch (Exception ignore)
   {
@@ -415,35 +407,36 @@ private void updateQuickGuide()
     {
       java.lang.reflect.Method m = this.getClass().getMethod(
         "setQuickGuide", new Class[]{ javax.baja.sys.BString.class });
-      m.invoke(this, javax.baja.sys.BString.make(QUICK_GUIDE));
+      m.invoke(this, new Object[]{ javax.baja.sys.BString.make(QUICK_GUIDE) });
     }
     catch (Exception ignore2) {}
   }
 }
 
-// ----------------------------------------------------
-// File path resolution / append / clear / archive / prune
-// Ported verbatim (renamed) from LinkCreator v3.0 so the two tools'
-// log and results-CSV behaviour is identical.
-// ----------------------------------------------------
+// "file:^logs/x.log", "^logs/x.log", "logs/x.log", "local:|file:^logs/x.log"
+// -> a file under the station home. Anything that resolves outside the
+// station home is refused (null) - see sandboxToStationHome().
 private java.io.File resolveToFile(String pathOrOrd)
 {
+  lastPathError = null;
   if (pathOrOrd == null) return null;
   String p = pathOrOrd.trim();
   if (p.length() == 0) return null;
 
-  // Strip "file:" scheme if present
-  if (p.startsWith("file:"))
-    p = p.substring(5);
+  // "local:|file:^x" / "station:|file:^x" -> "file:^x"
+  int bar = p.lastIndexOf('|');
+  if (bar >= 0 && p.substring(bar + 1).trim().startsWith("file:"))
+    p = p.substring(bar + 1).trim();
 
-  // "^" in a Niagara ORD means relative to station home
+  if (p.startsWith("file:")) p = p.substring(5);
+
+  // "^" = relative to the station home
   boolean stationRelative = false;
   if (p.startsWith("^"))
   {
     stationRelative = true;
     p = p.substring(1);
-    while (p.startsWith("/") || p.startsWith("\\"))
-      p = p.substring(1);
+    while (p.startsWith("/") || p.startsWith("\\")) p = p.substring(1);
   }
 
   java.io.File f = new java.io.File(p);
@@ -453,14 +446,12 @@ private java.io.File resolveToFile(String pathOrOrd)
   return sandboxToStationHome(f, pathOrOrd);
 }
 
-// Security: log/results/sample/manifest paths must resolve to somewhere
-// under the station's own home folder. Canonicalizes f and verifies
-// containment so neither an absolute path (e.g. "file:C:\Windows\...")
-// nor a "../" segment in a station-relative path can escape onto the
-// wider filesystem. Returns null (refusing the write/read) if it can't
-// verify containment - every caller already no-ops safely on null.
+// Canonicalizes f and checks it is inside the station home, so neither an
+// absolute path nor "../" can reach the wider file system. On refusal: null,
+// lastPathError set, and the reason goes to status and the App Director.
 private java.io.File sandboxToStationHome(java.io.File f, String original)
 {
+  String msg;
   try
   {
     java.io.File home = javax.baja.sys.Sys.getStationHome().getCanonicalFile();
@@ -468,19 +459,15 @@ private java.io.File sandboxToStationHome(java.io.File f, String original)
     if (canon.equals(home) ||
         canon.getPath().startsWith(home.getPath() + java.io.File.separator))
       return canon;
+    msg = "PATH REFUSED: '" + original + "' is outside the station folder";
   }
   catch (Exception e)
   {
-    String msg = "PATH ERROR: could not verify '" + original + "' - " + e.getMessage();
-    setStatus("[" + now() + "] " + msg);
-    log.warning("[ForceRemove] " + msg);
-    return null;
+    msg = "PATH ERROR: could not check '" + original + "' - " + e.getMessage();
   }
-
-  String msg = "PATH SANDBOX: refusing '" + original +
-    "' - resolves outside the station home folder";
+  lastPathError = msg;
   setStatus("[" + now() + "] " + msg);
-  log.warning("[ForceRemove] " + msg);
+  log.warning("[" + LOG_TAG + "] " + msg);
   return null;
 }
 
@@ -595,63 +582,20 @@ private void archiveFile(String activePath, String label)
   }
 }
 
+// Deletes the oldest <name>_yyyy-MM-dd_HH-mm-ss.<ext> archives of activePath
+// beyond maxArchives. 0 or negative = keep all.
 private void pruneArchives(String activePath)
 {
   try
   {
-    int max = resolveMaxArchives();
-    if (max <= 0) return; // 0 or negative means keep all
-
     java.io.File activeFile = resolveToFile(activePath);
     if (activeFile == null) return;
 
-    java.io.File parent = activeFile.getParentFile();
-    if (parent == null || !parent.isDirectory()) return;
-
     String fileName = activeFile.getName();
     int dotIdx = fileName.lastIndexOf('.');
-    final String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
-    final String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
-    final int expectedLen = stem.length() + 1 + 19 + ext.length();
-
-    java.io.File[] all = parent.listFiles(new java.io.FileFilter() {
-      public boolean accept(java.io.File f) {
-        if (!f.isFile()) return false;
-        String n = f.getName();
-        if (n.length() != expectedLen) return false;
-        if (!n.startsWith(stem + "_")) return false;
-        if (ext.length() > 0 && !n.endsWith(ext)) return false;
-        // Defensive: don't ever match the active file itself
-        if (n.equals(stem + ext)) return false;
-        return true;
-      }
-    });
-
-    if (all == null || all.length <= max) return;
-
-    java.util.Arrays.sort(all, new java.util.Comparator() {
-      public int compare(Object a, Object b) {
-        return ((java.io.File) a).getName().compareTo(
-               ((java.io.File) b).getName());
-      }
-    });
-
-    int toDelete = all.length - max;
-    for (int i = 0; i < toDelete; i++)
-    {
-      try
-      {
-        if (all[i].delete())
-          writeToLog("PRUNED archive: " + all[i].getName());
-        else
-          writeToLog("PRUNE WARN: could not delete " + all[i].getName());
-      }
-      catch (Exception e)
-      {
-        writeToLog("PRUNE ERROR: " + all[i].getName() +
-          " - " + e.getMessage());
-      }
-    }
+    String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
+    String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
+    pruneArchiveFiles(activeFile.getParentFile(), stem, ext);
   }
   catch (Exception e)
   {
@@ -728,22 +672,26 @@ private void writeResultsSummary(int[] counts, long totalMs)
     (isCancelled() ? " [CANCELLED]" : ""));
 }
 
+// One CSV field. Quotes when needed, and guards text that a spreadsheet
+// would run as a formula (= + - @ first) with a leading apostrophe.
+// Numbers such as -0.27 are left as numbers.
 private String csvEscape(String s)
 {
   if (s == null) s = "";
+  if (s.length() > 0 && "=+-@\t\r".indexOf(s.charAt(0)) >= 0 && !looksNumeric(s))
+    s = "'" + s;
   if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 ||
       s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0)
     return '"' + s.replace("\"", "\"\"") + '"';
   return s;
 }
 
-// Quote-aware CSV row parser (same as LinkCreator's), kept in case
-// sampleCsvPath rows ever carry a quoted Notes column with commas.
+// Quote-aware CSV row parser ("a, ""b"", c" style). Fields are trimmed.
 private String[] parseCsvRow(String line)
 {
   if (line == null) return new String[0];
   java.util.ArrayList fields = new java.util.ArrayList();
-  java.lang.StringBuilder cur = new java.lang.StringBuilder();
+  StringBuffer cur = new StringBuffer();
   boolean inQuote = false;
   int n = line.length();
   for (int i = 0; i < n; i++)
@@ -753,15 +701,10 @@ private String[] parseCsvRow(String line)
     {
       if (c == '"')
       {
-        if (i + 1 < n && line.charAt(i + 1) == '"')
-        { cur.append('"'); i++; }
-        else
-        { inQuote = false; }
+        if (i + 1 < n && line.charAt(i + 1) == '"') { cur.append('"'); i++; }
+        else inQuote = false;
       }
-      else
-      {
-        cur.append(c);
-      }
+      else cur.append(c);
     }
     else
     {
@@ -770,20 +713,13 @@ private String[] parseCsvRow(String line)
         fields.add(cur.toString());
         cur.setLength(0);
       }
-      else if (c == '"' && cur.length() == 0)
-      {
-        inQuote = true;
-      }
-      else
-      {
-        cur.append(c);
-      }
+      else if (c == '"' && cur.length() == 0) inQuote = true;
+      else cur.append(c);
     }
   }
   fields.add(cur.toString());
   String[] out = new String[fields.size()];
-  for (int i = 0; i < fields.size(); i++)
-    out[i] = ((String) fields.get(i)).trim();
+  for (int i = 0; i < fields.size(); i++) out[i] = ((String) fields.get(i)).trim();
   return out;
 }
 
@@ -985,7 +921,7 @@ private boolean matchesPointOrComponent(javax.baja.sys.BComponent c)
 // without a backup.
 //
 // Links: inbound + outbound links of each backed-up component are
-// captured to a 5-column CSV (BOrd1,Slot1,Direction,BOrd2,Slot2, the
+// captured to a CSV (BOrd1,Slot1,Direction,BOrd2,Slot2,LinkName, the
 // LinkCreator shape) BEFORE delete, and replayed on reverse with the
 // same BLink-by-handle construction LinkCreator uses. Outbound links are
 // also carried inside the copy itself; inbound links (from other
@@ -1129,7 +1065,7 @@ private void initBackups()
 
     clearFile(resolveReverseLinksPath());
     appendLine(resolveReverseLinksPath(),
-      "BOrd1,Slot1,Direction,BOrd2,Slot2");
+      "BOrd1,Slot1,Direction,BOrd2,Slot2,LinkName");
 
     backupInitDone = true;
     writeToLog("Reverse backups -> under program slot '" + BACKUP_FOLDER_NAME + "'");
@@ -1141,17 +1077,9 @@ private void initBackups()
   }
 }
 
-// Reflection helpers for BLink introspection (method names vary / are
-// not all public API). invoke0 calls a no-arg method, returns null on
-// any failure. strOf null-safely stringifies.
 private Object invoke0(Object target, String method)
 {
-  try
-  {
-    java.lang.reflect.Method m = target.getClass().getMethod(method, new Class[]{});
-    return m.invoke(target, new Object[]{});
-  }
-  catch (Throwable t) { return null; }
+  return callNoArg(target, method);
 }
 
 private String strOf(Object o)
@@ -1218,12 +1146,17 @@ private void captureLinks(javax.baja.sys.BComponent comp)
         if (sourceSlot.length() == 0 || targetSlot.length() == 0)
           continue; // nothing useful to replay
 
+        // The link's own slot name on its owner, so reverse restores it
+        // under the same name (Linker / Copier verify and reverse find it).
+        String linkName = strOf(invoke0(lk, "getName"));
+
         // Record as source -> target (BOrd1=source, BOrd2=target owner).
         appendLine(resolveReverseLinksPath(),
           csvEscape(sourcePath) + "," +
           csvEscape(sourceSlot) + ",>," +
           csvEscape(ownerPath) + "," +
-          csvEscape(targetSlot));
+          csvEscape(targetSlot) + "," +
+          csvEscape(linkName));
       }
       catch (Throwable t)
       { writeToLog("CAPTURE LINK ERROR on " + compPath + ": " + describeException(t)); }
@@ -1798,7 +1731,7 @@ private void runReverse(long runStart) throws Exception
   writeToLog(summary);
 }
 
-// Replay the captured-links CSV (5-column BOrd1,Slot1,>,BOrd2,Slot2),
+// Replay the captured-links CSV (BOrd1,Slot1,>,BOrd2,Slot2[,LinkName]),
 // recreating each link with the same BLink-by-handle construction
 // LinkCreator uses. Skips a link that already exists. Returns the count
 // created.
@@ -1959,11 +1892,17 @@ private int replayReverseLinks()
         javax.baja.sys.BComponent srcComp = (javax.baja.sys.BComponent) so;
         javax.baja.sys.BComponent tgtComp = (javax.baja.sys.BComponent) to;
 
-        String linkName = "revLink_" + srcComp.getName() + "_" +
-          srcSlot + "_to_" + tgtSlot + "_" +
-          (Math.abs(srcComp.getSlotPath().toString().hashCode()) % 10000);
+        // v3.3: restore under the link's original name (column 6). Older
+        // records have no name: use buildLinkName(), the formula Linker
+        // and Component Copier use, so their verify / reverse find it.
+        String linkName = (cols.length >= 6 && cols[5].length() > 0)
+          ? cols[5] : buildLinkName(srcComp, srcSlot, tgtSlot);
 
-        if (tgtComp.getSlot(linkName) != null) continue; // already there
+        Object existing = tgtComp.get(linkName);
+        if (existing instanceof javax.baja.sys.BLink) continue; // already there
+        if (existing != null)                                   // name taken
+          linkName = buildLinkName(srcComp, srcSlot, tgtSlot);
+        if (tgtComp.getSlot(linkName) != null) continue;
 
         // v3.2: only replay when both slots exist (add() would accept a
         // missing slot and leave a dead link).
@@ -1974,19 +1913,10 @@ private int replayReverseLinks()
           continue;
         }
 
-        String srcHandle = srcComp.getHandle().toString();
-        javax.baja.naming.BOrd srcHandleOrd =
-          javax.baja.naming.BOrd.make("h:" + srcHandle);
-        javax.baja.sys.BLink newLink =
-          new javax.baja.sys.BLink(srcHandleOrd, srcSlot, tgtSlot, true);
-        tgtComp.add(linkName, newLink, null);
-
-        // v3.2: read the link back - add() returns normally even when the
-        // link can't work. A dead link is removed, not counted.
-        String health = linkHealth(tgtComp, linkName);
+        // Common createLink: add, read back, remove if dead.
+        String health = createLink(srcComp, srcSlot, tgtComp, tgtSlot, linkName);
         if (health != null)
         {
-          removeDeadLink(tgtComp, linkName);
           writeToLog("REVERSE LINK FAILED row " + rowNum + ": " +
             srcComp.getName() + "[" + srcSlot + "] -> " + tgtComp.getName() +
             "[" + tgtSlot + "] - " + health + " (removed)");
@@ -1994,7 +1924,7 @@ private int replayReverseLinks()
         }
         created++;
         writeToLog("REVERSE LINK: " + srcComp.getName() + "[" + srcSlot +
-          "] -> " + tgtComp.getName() + "[" + tgtSlot + "]");
+          "] -> " + tgtComp.getName() + "[" + tgtSlot + "] as " + linkName);
       }
       catch (Throwable t)
       { writeToLog("REVERSE LINK ERROR row " + rowNum + ": " + describeException(t)); }
@@ -3364,4 +3294,288 @@ public void onStop() throws Exception
 {
   log.info("[ForceRemove] Service stopped");
   writeToLog("Service stopped");
+}
+
+// ============================================ COMMON (sync_common.py) ===
+private String lastPathError = null;
+
+// A baja:Ord slot as text, or def when the slot is missing, null or blank.
+private String ordSlot(String slot, String def)
+{
+  try
+  {
+    Object o = get(slot);
+    if (o instanceof javax.baja.naming.BOrd)
+    {
+      javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) o;
+      String s = ord.toString().trim();
+      if (!ord.isNull() && s.length() > 0 && !s.equals("null")) return s;
+    }
+  }
+  catch (Exception ignore) {}
+  return def;
+}
+
+// A baja:Integer slot, or def when the slot is missing or unreadable.
+private int intSlot(String slot, int def)
+{
+  try
+  {
+    Object o = get(slot);
+    if (o instanceof javax.baja.sys.BInteger)
+      return ((javax.baja.sys.BInteger) o).getInt();
+  }
+  catch (Exception ignore) {}
+  return def;
+}
+
+private void archiveAndPrune(String activePath, String label)
+{
+  archiveFile(activePath, label);
+  pruneArchives(activePath);
+}
+
+// Log file + Application Director in one call.
+private void logInfo(String message)
+{
+  log.info("[" + LOG_TAG + "] " + message);
+  writeToLog(message);
+}
+
+private void logWarn(String message)
+{
+  log.warning("[" + LOG_TAG + "] " + message);
+  writeToLog(message);
+}
+
+private void logError(String message)
+{
+  log.severe("[" + LOG_TAG + "] " + message);
+  writeToLog(message);
+}
+
+private boolean looksNumeric(String s)
+{
+  try
+  {
+    Double.parseDouble(s.trim());
+    return true;
+  }
+  catch (Exception e)
+  {
+    return false;
+  }
+}
+
+// Adds src.srcSlot -> tgt.tgtSlot as link slot linkName on tgt (source by
+// handle ord), then reads it back. Null = linked; else the reason, and the
+// dead link has been removed. Run preLinkCheck first.
+private String createLink(
+  javax.baja.sys.BComponent srcComp, String srcSlot,
+  javax.baja.sys.BComponent tgtComp, String tgtSlot, String linkName)
+{
+  javax.baja.naming.BOrd srcHandleOrd =
+    javax.baja.naming.BOrd.make("h:" + srcComp.getHandle().toString());
+  javax.baja.sys.BLink newLink =
+    new javax.baja.sys.BLink(srcHandleOrd, srcSlot, tgtSlot, true);
+  tgtComp.add(linkName, newLink, null);
+  String health = linkHealth(tgtComp, linkName);
+  if (health != null) removeDeadLink(tgtComp, linkName);
+  return health;
+}
+
+// The one link-name formula every tool uses, so a link made by one tool is
+// recognized by the others: link_<source>_<srcSlot>_to_<tgtSlot>_<4-digit
+// hash of the source's slot path>.
+private String buildLinkName(
+  javax.baja.sys.BComponent srcComp, String srcSlotStr, String tgtSlotStr)
+{
+  String srcPath = srcComp.getSlotPath().toString();
+  int pathHash = Math.abs(srcPath.hashCode()) % 10000;
+  return "link_" + srcComp.getName() + "_" + srcSlotStr +
+    "_to_" + tgtSlotStr + "_" + pathHash;
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Deletes the oldest <stem>_yyyy-MM-dd_HH-mm-ss<ext> files in dir beyond
+// maxArchives. 0 or negative = keep all.
+private void pruneArchiveFiles(java.io.File parent, String stem, String ext)
+{
+  try
+  {
+    int max = resolveMaxArchives();
+    if (max <= 0) return;
+    if (parent == null || !parent.isDirectory()) return;
+    int expectedLen = stem.length() + 1 + 19 + ext.length();
+
+    java.io.File[] listed = parent.listFiles();
+    if (listed == null) return;
+
+    java.util.ArrayList names = new java.util.ArrayList();
+    for (int i = 0; i < listed.length; i++)
+    {
+      java.io.File f = listed[i];
+      if (!f.isFile()) continue;
+      String n = f.getName();
+      if (n.length() != expectedLen) continue;
+      if (!n.startsWith(stem + "_")) continue;
+      if (ext.length() > 0 && !n.endsWith(ext)) continue;
+      if (n.equals(stem + ext)) continue;            // never the active file
+      names.add(n);
+    }
+    if (names.size() <= max) return;
+
+    String[] sorted = new String[names.size()];
+    for (int i = 0; i < sorted.length; i++) sorted[i] = (String) names.get(i);
+    java.util.Arrays.sort(sorted);                   // timestamp order
+
+    int toDelete = sorted.length - max;
+    for (int i = 0; i < toDelete; i++)
+    {
+      java.io.File f = new java.io.File(parent, sorted[i]);
+      try
+      {
+        if (f.delete()) writeToLog("PRUNED archive: " + sorted[i]);
+        else            writeToLog("PRUNE WARN: could not delete " + sorted[i]);
+      }
+      catch (Exception e)
+      {
+        writeToLog("PRUNE ERROR: " + sorted[i] + " - " + e.getMessage());
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog("PRUNE EXCEPTION in " + parent + " - " + e.getMessage());
+  }
+}
+
+// An output slot that may name a file or a folder (csvFile, configFile...).
+// Folder = an existing folder, a path ending in / or \, or a last part with
+// no dot (file:^reports). In a folder the file is defaultName, or with
+// timestamped = true <stem>_yyyy-MM-dd_HH-mm-ss<ext> (one per run - prune
+// with pruneArchiveFiles). Null if refused (lastPathError says why).
+private java.io.File resolveOutputFile(String pathOrOrd, String defaultName,
+                                       boolean timestamped)
+{
+  java.io.File f = resolveToFile(pathOrOrd);
+  if (f == null) return null;
+  String p = pathOrOrd.trim();
+  boolean isDir = p.endsWith("/") || p.endsWith("\\") || f.isDirectory() ||
+                  f.getName().indexOf('.') < 0;
+  if (!isDir) return f;
+  String name = timestamped ? buildTimestampedArchivePath(defaultName) : defaultName;
+  return new java.io.File(f, name);
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// status slot + App Director + log file in one call: "[time] message".
+private void reportInfo(String message)
+{
+  setStatus("[" + now() + "] " + message);
+  logInfo(message);
+}
+
+private void reportWarn(String message)
+{
+  setStatus("[" + now() + "] " + message);
+  logWarn(message);
+}
+
+private void reportError(String message)
+{
+  setStatus("[" + now() + "] " + message);
+  logError(message);
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Writes text to f (UTF-8, overwrites), creating the folder if needed.
+// Get f from resolveToFile / resolveOutputFile so it is station-home only.
+private void writeTextFile(java.io.File f, String text) throws Exception
+{
+  java.io.File parent = f.getParentFile();
+  if (parent != null && !parent.exists()) parent.mkdirs();
+  java.io.FileOutputStream os = new java.io.FileOutputStream(f, false);
+  try { os.write(text.getBytes("UTF-8")); }
+  finally { os.close(); }
+}
+
+// After writing a per-run file from resolveOutputFile(..., true): if its
+// name is <stem>_yyyy-MM-dd_HH-mm-ss<ext>, keep only the newest maxArchives
+// of that stem in its folder. A fixed file name is left alone.
+private void pruneRunFiles(java.io.File written)
+{
+  if (written == null) return;
+  String n = written.getName();
+  java.util.regex.Matcher m = java.util.regex.Pattern
+    .compile("^(.+)_\\d{4}-\\d\\d-\\d\\d_\\d\\d-\\d\\d-\\d\\d(\\.[^.]*)?$").matcher(n);
+  if (!m.matches()) return;
+  pruneArchiveFiles(written.getParentFile(), m.group(1),
+                    m.group(2) == null ? "" : m.group(2));
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Slot path or ord -> the component there (null if it doesn't resolve to
+// a component). Accepts "/a/b", "slot:/a/b", "station:|slot:/a/b"; names
+// are escaped as normalizeOrd() does.
+private javax.baja.sys.BComponent compAt(String path)
+{
+  if (path == null) return null;
+  if (path.startsWith("/")) path = "slot:" + path;
+  try
+  {
+    Object o = javax.baja.naming.BOrd.make(normalizeOrd(path)).resolve().get();
+    if (o instanceof javax.baja.sys.BComponent) return (javax.baja.sys.BComponent) o;
+  }
+  catch (Throwable ignore) {}
+  return null;
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Undoes one record row. Returns REMOVED, or SKIPPED (why) / FAILED (why):
+// an item that was changed or replaced since the run is skipped, never
+// removed. Row layouts (paths are slot paths):
+//   LINK, <target>, <link name>, <source>, <source slot>, <target slot>
+//   COMP, <parent>, <child name>, <copied from>, <type>
+private String undoReverseRow(String[] r)
+{
+  if (r == null || r.length < 3) return "SKIPPED (bad record row)";
+  String kind = r[0];
+  String name = r[2];
+  javax.baja.sys.BComponent owner = compAt(r[1]);
+  if (owner == null) return "SKIPPED (" + r[1] + " not found)";
+  Object v = null;
+  try { v = owner.get(name); } catch (Throwable ignore) {}
+
+  if ("LINK".equals(kind))
+  {
+    if (!(v instanceof javax.baja.sys.BLink))
+      return "SKIPPED (link " + name + " not found)";
+    String ss = strOf(callNoArg(v, "getSourceSlotName"));
+    String ts = strOf(callNoArg(v, "getTargetSlotName"));
+    if (r.length >= 6 && (!ss.equals(r[4]) || !ts.equals(r[5])))
+      return "SKIPPED (link " + name + " changed since the run)";
+  }
+  else if ("COMP".equals(kind))
+  {
+    if (!(v instanceof javax.baja.sys.BComponent))
+      return "SKIPPED (" + name + " not found)";
+    String type = String.valueOf(((javax.baja.sys.BComponent) v).getType());
+    if (r.length >= 5 && r[4].length() > 0 && !type.equals(r[4]))
+      return "SKIPPED (" + name + " was replaced since the run: " + type + ")";
+  }
+  else
+  {
+    return "SKIPPED (unknown record row " + kind + ")";
+  }
+
+  try
+  {
+    owner.remove(name);
+  }
+  catch (Throwable t)
+  {
+    return "FAILED (" + describeException(t) + ")";
+  }
+  return "REMOVED";
 }
