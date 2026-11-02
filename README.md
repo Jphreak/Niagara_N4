@@ -20,7 +20,6 @@ on-station help is in each program's quickGuide slot.
 
 - `src/N4/<Program>/`, `src/AX/<Program>/` — source and slot sheet
 - `Precompiled Bogs/` — ready-made programs to drop into a station
-- `Powershell_Scripts/` — helper scripts
 
 ## Using a program
 
