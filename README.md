@@ -20,7 +20,6 @@ on-station help is in each program's quickGuide slot.
 
 - `src/N4/<Program>/`, `src/AX/<Program>/` — source and slot sheet
 - `Precompiled Bogs/` — ready-made programs to drop into a station (ForceRemove_N4.bog is still v3.2 until re-exported)
-- `src/Common/` — shared helper code the programs are built on (see its README)
 - `Powershell_Scripts/` — helper scripts
 
 ## Using a program
