@@ -18,7 +18,7 @@ on-station help is in each program's quickGuide slot.
 
 ## Layout
 
-- `src/N4/<Program>/`, `src/AX/<Program>/` — source and slot sheet
+- `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code and slot sheet
 - `Precompiled Bogs/` — ready-made programs to drop into a station
 
 ## Using a program
