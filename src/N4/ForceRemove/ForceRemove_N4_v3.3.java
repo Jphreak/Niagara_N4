@@ -135,7 +135,7 @@ private static final String LOG_TAG = "ForceRemove";
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
 private static final String QUICK_GUIDE =
-  "ForceRemove " + "v3.2\n" +
+  "ForceRemove " + VERSION + "\n" +
   "=====================================\n" +
   "\n" +
   "Target modes (operationMode):\n" +

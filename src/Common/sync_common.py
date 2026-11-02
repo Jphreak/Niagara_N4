@@ -140,7 +140,27 @@ def check(program, base):
                 problems.append('missing ' + name)
         elif norm(src[span[0]:span[1]]) != norm(code):
             problems.append('differs ' + name)
-    return problems
+    return problems + version_problems(program['path'], src)
+
+
+def version_problems(path, src):
+    """Header Version:, VERSION constant, file name and quickGuide title must agree."""
+    out = []
+    m = re.search(r'\bString\s+VERSION\s*=\s*"([^"]+)"', src)
+    if not m:
+        return ['no VERSION constant']
+    ver = m.group(1)
+    h = re.search(r'^\s*\*?\s*Version:\s*(\S+)', src, re.M)
+    if h and h.group(1) != ver:
+        out.append('header Version: %s but VERSION = %s' % (h.group(1), ver))
+    f = re.search(r'_v?(\d[\w.]*?)\.java$', os.path.basename(path))
+    core = re.sub(r'^v', '', re.sub(r'-(AX|m)$', '', ver))
+    if f and f.group(1) != core:
+        out.append('file name says %s but VERSION = %s' % (f.group(1), ver))
+    q = re.search(r'QUICK_GUIDE\s*=\s*\n?\s*"([^"]*)"\s*\+\s*("[^"]*"|\w+)', src)
+    if q and (re.search(r'\bv?\d+\.\d+', q.group(1)) or q.group(2).startswith('"')):
+        out.append('quickGuide title hard-codes a version - use VERSION')
+    return out
 
 
 def main():

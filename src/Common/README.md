@@ -59,6 +59,9 @@ default 10) on file-writing tools.
 - **CSV** every field through `csvEscape` (quotes when needed, leading `'`
   on text a spreadsheet would run as a formula).
 - **dry run** is an action, never a Boolean slot.
+- **version** one `VERSION` constant; the header `Version:`, the file name
+  and the quickGuide title (`"<Tool> " + VERSION`) must match it.
+  `sync_common.py check` reports any mismatch.
 - **reverse** undoes a record of what the live run actually changed
   (`recordReverse` as each change is made); reverse consumes it. Items
   changed since the run are skipped, never removed.
