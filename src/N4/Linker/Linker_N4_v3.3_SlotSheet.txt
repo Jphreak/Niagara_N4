@@ -1,5 +1,8 @@
-Linker v3.2 - Slot Sheet (complete, for a new Linker program)
+Linker v3.3 - Slot Sheet (complete, for a new Linker program)
 =============================================================
+
+No slot or import changes from v3.2: paste the v3.3 code into the
+existing program and compile.
 
 Imports
 -------
