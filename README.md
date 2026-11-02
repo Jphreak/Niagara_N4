@@ -24,7 +24,7 @@ on-station help is in each program's quickGuide slot.
 ## Using a program
 
 - **Bog:** open it in Workbench and copy the program into the station.
-- **Source:** add a new Program Object, add the imports and slots from the
+- **Raw Code:** add a new Program Object, add the imports and slots from the
   slot sheet, paste the `.java` code, compile.
 
 Back up the station before running ForceRemove, ComponentCopier or Linker,
