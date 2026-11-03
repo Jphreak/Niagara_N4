@@ -1,4 +1,4 @@
-MonthlyVavHealth v1.00 - Slot Sheet (complete)
+MonthlyVavHealth v1.01 - Slot Sheet (complete)
 ==============================================
 
 Imports
@@ -16,12 +16,15 @@ Add these slots
 ---------------
 Flags: r = Read Only.  "Execute On Change" = tick that box on the slot.
 
-baja:Ord  (3)
+baja:Ord  (4)
   Name           Default                                  Flags
   -------------  ---------------------------------------  -----
   samplesFolder  file:^Csv_Logs/VAV_Samples
   reportFolder   file:^Csv_Logs/Monthly_Reports
   archiveFolder  file:^Csv_Logs/Monthly_Reports/Archive
+  logFilePath    (blank) = file:^logs/MonthlyVavHealth.log   (NEW v1.01) one log
+                 per Run Report Now / Archive Reports; old logs kept
+                 up to maxArchives
 
 baja:String  (8)
   Name           Default             Flags  Facets

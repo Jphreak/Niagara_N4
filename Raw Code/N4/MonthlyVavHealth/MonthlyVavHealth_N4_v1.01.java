@@ -2,11 +2,17 @@
 ================================================================================
 Program: MonthlyVavHealth - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.00
-Date:    2026-10-30
+Version: v1.01
+Date:    2026-11-02
 
 Changes
 -------
+  v1.01  Common helper block (testing/Common, c1): station-home-only
+         paths with a PATH REFUSED message, csvEscape (formula guard)
+         instead of the local csv(), reportWarn status lines.
+         + logFilePath slot: one log per Run Report Now / Archive
+         Reports, kept up to maxArchives. quickGuide header now shows
+         the VERSION constant.
   v1.00  Initial release.
 
 Purpose
@@ -143,8 +149,10 @@ Slot Sheet
 ================================================================================
 */
 
-private static final String VERSION = "v1.00";
-
+private static final String VERSION = "v1.01";
+private static final String LOG_TAG = "MonthlyVavHealth";
+private static final java.util.logging.Logger log =
+  java.util.logging.Logger.getLogger("MonthlyVavHealth");
 private static final String DEFAULT_SAMPLES = "file:^Csv_Logs/VAV_Samples";
 private static final String DEFAULT_REPORTS = "file:^Csv_Logs/Monthly_Reports";
 private static final String DEFAULT_NAME    = "Monthly VAV health";
@@ -157,7 +165,7 @@ private static final String REPORT_HEADER =
   "Number of Fails,Number of Skips,% Passes,% Fails,% Skips";
 
 private static final String QUICK_GUIDE =
-  "Monthly VAV Health " + "v1.00\n" +
+  "Monthly VAV Health " + VERSION + "\n" +
   "=====================================\n" +
   "\n" +
   "Reads the ZoneTempDeltaT sample CSVs in samplesFolder and, on the\n" +
@@ -199,8 +207,8 @@ private static final String QUICK_GUIDE =
 
 public void onStart() throws Exception
 {
-  setVersion(VERSION);
-  setQuickGuide(QUICK_GUIDE);
+  updateVersion();
+  updateQuickGuide();
 }
 
 public void onExecute() throws Exception
@@ -219,12 +227,13 @@ public void onStop() throws Exception
 
 public void onRunReport() throws Exception
 {
+  archiveAndPrune(resolveLogPath(), "LOG");
   String raw = getReportMonth();
   boolean set = raw != null && raw.trim().length() > 0;
   String m = cleanMonth(raw);
   if (set && m == null)
   {
-    setStatus("[" + now() + "] Not run: reportMonth '" + raw.trim() +
+    reportWarn("Not run: reportMonth '" + raw.trim() +
       "' isn't yyyy-MM (e.g. 2026-10). Fix or clear it.");
     return;
   }
@@ -244,11 +253,13 @@ public void onRunReport() throws Exception
 
 public void onArchive() throws Exception
 {
+  archiveAndPrune(resolveLogPath(), "LOG");
   StringBuffer log = new StringBuffer();
   log.append("[").append(now()).append("] Archive\n");
   archiveReports(log);
   purge(log);
   setStatus(log.toString());
+    writeRunLog(log.toString());
 }
 
 // ----------------------------------------------------
@@ -262,15 +273,18 @@ private void runFor(String month)
      .append("Report ").append(month).append("\n");
 
   java.io.File src = resolveToFile(ordString("samplesFolder", DEFAULT_SAMPLES));
+  String srcErr = lastPathError;
   java.io.File arch = resolveToFile(ordString("archiveFolder", DEFAULT_ARCHIVE));
   java.io.File archSamples = (arch == null) ? null : sampleArchiveDir(arch, month);
   boolean haveSrc = src != null && src.isDirectory();
   boolean haveArch = archSamples != null && archSamples.isDirectory();
   if (!haveSrc && !haveArch)
   {
-    log.append("Samples folder not found: ")
-       .append(ordString("samplesFolder", DEFAULT_SAMPLES));
+    if (srcErr != null) log.append(srcErr);
+    else log.append("Samples folder not found: ")
+            .append(ordString("samplesFolder", DEFAULT_SAMPLES));
     setStatus(log.toString());
+    writeRunLog(log.toString());
     return;
   }
 
@@ -321,6 +335,7 @@ private void runFor(String month)
     log.append("No usable sample files for ").append(month)
        .append(" in samplesFolder or the archive\n").append(skipped);
     setStatus(log.toString());
+    writeRunLog(log.toString());
     return;
   }
   log.append(filesUsed).append(" sample file(s) read\n").append(skipped);
@@ -329,8 +344,9 @@ private void runFor(String month)
   java.io.File outDir = resolveToFile(repOrd);
   if (outDir == null)
   {
-    log.append("Report folder refused: ").append(repOrd);
+    log.append(lastPathError != null ? lastPathError : "Report folder refused: " + repOrd);
     setStatus(log.toString());
+    writeRunLog(log.toString());
     return;
   }
   if (!outDir.exists()) outDir.mkdirs();
@@ -378,6 +394,7 @@ private void runFor(String month)
   }
 
   setStatus(log.toString());
+    writeRunLog(log.toString());
 }
 
 // ----------------------------------------------------
@@ -394,16 +411,18 @@ private void archiveReports(StringBuffer log)
   month = month == null ? "" : month.trim();
 
   java.io.File dir = resolveToFile(ordString("reportFolder", DEFAULT_REPORTS));
+  String dirErr = lastPathError;
   java.io.File arch = resolveToFile(ordString("archiveFolder", DEFAULT_ARCHIVE));
+  String archErr = lastPathError;
   if (dir == null || !dir.isDirectory())
   {
-    log.append("Report folder not found\n");
+    log.append(dirErr != null ? dirErr : "Report folder not found").append("\n");
     return;
   }
   if (arch == null)
   {
-    log.append("Archive folder refused: ")
-       .append(ordString("archiveFolder", DEFAULT_ARCHIVE)).append("\n");
+    log.append(archErr != null ? archErr : "Archive folder refused: " +
+       ordString("archiveFolder", DEFAULT_ARCHIVE)).append("\n");
     return;
   }
   if (!arch.exists()) arch.mkdirs();
@@ -809,7 +828,7 @@ private int[] writeReport(java.io.File out, String bldg, java.util.Map equips)
 
 private String row(String bldg, String name, int[] c)
 {
-  return csv(bldg) + "," + csv(name) + "," + c[0] + "," + c[1] + "," + c[2] + "," +
+  return csvEscape(bldg) + "," + csvEscape(name) + "," + c[0] + "," + c[1] + "," + c[2] + "," +
     c[3] + "," + pct(c[1], c[1] + c[2]) + "," + pct(c[2], c[1] + c[2]) + "," +
     pct(c[3], c[0]);
 }
@@ -916,14 +935,6 @@ private String cell(String[] r, int i)
   return (i >= 0 && i < r.length) ? r[i].trim() : "";
 }
 
-private String csv(String s)
-{
-  if (s == null) return "";
-  if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0)
-    return "\"" + s.replace("\"", "\"\"") + "\"";
-  return s;
-}
-
 private String pct(int part, int whole)
 {
   return whole > 0 ? fmt(100.0 * part / whole, 1) : "0.0";
@@ -998,16 +1009,24 @@ private String now()
     .format(new java.util.Date());
 }
 
-// From ComponentCopier / ForceRemove: "file:^x/y" -> <station home>/x/y.
-// Paths outside the station home folder are refused.
+// "file:^logs/x.log", "^logs/x.log", "logs/x.log", "local:|file:^logs/x.log"
+// -> a file under the station home. Anything that resolves outside the
+// station home is refused (null) - see sandboxToStationHome().
 private java.io.File resolveToFile(String pathOrOrd)
 {
+  lastPathError = null;
   if (pathOrOrd == null) return null;
   String p = pathOrOrd.trim();
   if (p.length() == 0) return null;
 
+  // "local:|file:^x" / "station:|file:^x" -> "file:^x"
+  int bar = p.lastIndexOf('|');
+  if (bar >= 0 && p.substring(bar + 1).trim().startsWith("file:"))
+    p = p.substring(bar + 1).trim();
+
   if (p.startsWith("file:")) p = p.substring(5);
 
+  // "^" = relative to the station home
   boolean stationRelative = false;
   if (p.startsWith("^"))
   {
@@ -1020,6 +1039,134 @@ private java.io.File resolveToFile(String pathOrOrd)
   if (stationRelative || !f.isAbsolute())
     f = new java.io.File(javax.baja.sys.Sys.getStationHome(), p);
 
+  return sandboxToStationHome(f, pathOrOrd);
+}
+
+// The run's multi-line status text -> log file; first line to the App
+// Director (Common logInfo / logWarn).
+private void writeRunLog(String text)
+{
+  String t = (text == null) ? "" : text.trim();
+  int nl = t.indexOf('\n');
+  String first = (nl < 0) ? t : t.substring(0, nl);
+  boolean bad = t.indexOf("refused") >= 0 || t.indexOf("REFUSED") >= 0 ||
+                t.indexOf("not found") >= 0 || t.indexOf("ERROR") >= 0;
+  if (bad) log.warning("[" + LOG_TAG + "] " + first);
+  else     log.info("[" + LOG_TAG + "] " + first);
+  writeToLog(t);
+}
+
+// ============================================ COMMON (sync_common.py) ===
+private String lastPathError = null;
+
+// Readable reason from an exception - never empty or "null". Unwraps
+// reflection wrappers so the real cause shows.
+private String describeException(Throwable t)
+{
+  if (t == null) return "unknown error";
+  while (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+    t = t.getCause();
+
+  StringBuilder sb = new StringBuilder();
+  String cls = t.getClass().getSimpleName();
+  String msg = t.getMessage();
+
+  if (msg != null && msg.trim().length() > 0)
+    sb.append(cls).append(": ").append(msg.trim());
+  else
+    sb.append(cls).append(" (no detail message)");
+
+  Throwable cause = t.getCause();
+  if (cause != null && cause != t)
+  {
+    sb.append(" [cause: ").append(cause.getClass().getSimpleName());
+    String cmsg = cause.getMessage();
+    if (cmsg != null && cmsg.trim().length() > 0)
+      sb.append(": ").append(cmsg.trim());
+    sb.append("]");
+  }
+  return sb.toString();
+}
+
+// Reflection-based setter for the version slot - no hard dependency on the
+// generated setVersion() signature.
+private void updateVersion()
+{
+  try
+  {
+    java.lang.reflect.Method m = this.getClass().getMethod(
+      "setVersion", new Class[]{ String.class });
+    m.invoke(this, new Object[]{ VERSION });
+  }
+  catch (Exception ignore)
+  {
+    try
+    {
+      java.lang.reflect.Method m = this.getClass().getMethod(
+        "setVersion", new Class[]{ javax.baja.sys.BString.class });
+      m.invoke(this, new Object[]{ javax.baja.sys.BString.make(VERSION) });
+    }
+    catch (Exception ignore2) {}
+  }
+}
+
+// Same pattern for the quickGuide slot.
+private void updateQuickGuide()
+{
+  try
+  {
+    java.lang.reflect.Method m = this.getClass().getMethod(
+      "setQuickGuide", new Class[]{ String.class });
+    m.invoke(this, new Object[]{ QUICK_GUIDE });
+  }
+  catch (Exception ignore)
+  {
+    try
+    {
+      java.lang.reflect.Method m = this.getClass().getMethod(
+        "setQuickGuide", new Class[]{ javax.baja.sys.BString.class });
+      m.invoke(this, new Object[]{ javax.baja.sys.BString.make(QUICK_GUIDE) });
+    }
+    catch (Exception ignore2) {}
+  }
+}
+
+// A baja:Ord slot as text, or def when the slot is missing, null or blank.
+private String ordSlot(String slot, String def)
+{
+  try
+  {
+    Object o = get(slot);
+    if (o instanceof javax.baja.naming.BOrd)
+    {
+      javax.baja.naming.BOrd ord = (javax.baja.naming.BOrd) o;
+      String s = ord.toString().trim();
+      if (!ord.isNull() && s.length() > 0 && !s.equals("null")) return s;
+    }
+  }
+  catch (Exception ignore) {}
+  return def;
+}
+
+// A baja:Integer slot, or def when the slot is missing or unreadable.
+private int intSlot(String slot, int def)
+{
+  try
+  {
+    Object o = get(slot);
+    if (o instanceof javax.baja.sys.BInteger)
+      return ((javax.baja.sys.BInteger) o).getInt();
+  }
+  catch (Exception ignore) {}
+  return def;
+}
+
+// Canonicalizes f and checks it is inside the station home, so neither an
+// absolute path nor "../" can reach the wider file system. On refusal: null,
+// lastPathError set, and the reason goes to status and the App Director.
+private java.io.File sandboxToStationHome(java.io.File f, String original)
+{
+  String msg;
   try
   {
     java.io.File home = javax.baja.sys.Sys.getStationHome().getCanonicalFile();
@@ -1027,7 +1174,365 @@ private java.io.File resolveToFile(String pathOrOrd)
     if (canon.equals(home) ||
         canon.getPath().startsWith(home.getPath() + java.io.File.separator))
       return canon;
+    msg = "PATH REFUSED: '" + original + "' is outside the station folder";
   }
-  catch (Exception ignore) {}
+  catch (Exception e)
+  {
+    msg = "PATH ERROR: could not check '" + original + "' - " + e.getMessage();
+  }
+  lastPathError = msg;
+  setStatus("[" + now() + "] " + msg);
+  log.warning("[" + LOG_TAG + "] " + msg);
   return null;
+}
+
+private void appendLine(String filePath, String line)
+{
+  java.io.BufferedWriter bw = null;
+  try
+  {
+    java.io.File file = resolveToFile(filePath);
+    if (file == null) return;
+
+    java.io.File parent = file.getParentFile();
+    if (parent != null && !parent.exists()) parent.mkdirs();
+
+    // append=true creates the file if it does not exist yet
+    bw = new java.io.BufferedWriter(new java.io.OutputStreamWriter(
+      new java.io.FileOutputStream(file, true), "UTF-8"));
+    bw.write(line);
+    bw.newLine();
+  }
+  catch (Exception e)
+  {
+    setStatus("[" + now() + "] FILE ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (bw != null) try { bw.close(); } catch (Exception ignore) {}
+  }
+}
+
+private void clearFile(String filePath)
+{
+  java.io.FileOutputStream fos = null;
+  try
+  {
+    java.io.File file = resolveToFile(filePath);
+    if (file == null) return;
+
+    java.io.File parent = file.getParentFile();
+    if (parent != null && !parent.exists()) parent.mkdirs();
+
+    // append=false truncates if it exists, creates if it doesn't
+    fos = new java.io.FileOutputStream(file, false);
+  }
+  catch (Exception e)
+  {
+    setStatus("[" + now() + "] CLEAR ERROR: " + e.getMessage());
+  }
+  finally
+  {
+    if (fos != null) try { fos.close(); } catch (Exception ignore) {}
+  }
+}
+
+// "<dir>/name.ext" -> "<dir>/name_yyyy-MM-dd_HH-mm-ss.ext"
+private String buildTimestampedArchivePath(String filePath)
+{
+  String ts = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss")
+    .format(new java.util.Date());
+
+  int slashIdx = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  int dotIdx = filePath.lastIndexOf('.');
+
+  if (dotIdx > slashIdx)
+    return filePath.substring(0, dotIdx) + "_" + ts + filePath.substring(dotIdx);
+  return filePath + "_" + ts;
+}
+
+// Moves the active file to its timestamped archive name (rename, or copy +
+// truncate if rename fails). Empty or missing files are left alone.
+private void archiveFile(String activePath, String label)
+{
+  try
+  {
+    java.io.File activeFile = resolveToFile(activePath);
+    if (activeFile == null || !activeFile.exists() || activeFile.length() == 0)
+      return;
+
+    String archivePath = buildTimestampedArchivePath(activePath);
+    java.io.File archiveFile = resolveToFile(archivePath);
+    if (archiveFile == null) return;
+
+    java.io.File parent = archiveFile.getParentFile();
+    if (parent != null && !parent.exists()) parent.mkdirs();
+
+    if (!activeFile.renameTo(archiveFile))
+    {
+      java.io.FileInputStream  fis = null;
+      java.io.FileOutputStream fos = null;
+      try
+      {
+        fis = new java.io.FileInputStream(activeFile);
+        fos = new java.io.FileOutputStream(archiveFile, false);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
+      }
+      finally
+      {
+        if (fis != null) try { fis.close(); } catch (Exception ignore) {}
+        if (fos != null) try { fos.close(); } catch (Exception ignore) {}
+      }
+      clearFile(activePath);
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog(label + " ARCHIVE ERROR: " + e.getMessage());
+  }
+}
+
+// Deletes the oldest <name>_yyyy-MM-dd_HH-mm-ss.<ext> archives of activePath
+// beyond maxArchives. 0 or negative = keep all.
+private void pruneArchives(String activePath)
+{
+  try
+  {
+    java.io.File activeFile = resolveToFile(activePath);
+    if (activeFile == null) return;
+
+    String fileName = activeFile.getName();
+    int dotIdx = fileName.lastIndexOf('.');
+    String stem = (dotIdx > 0) ? fileName.substring(0, dotIdx) : fileName;
+    String ext  = (dotIdx > 0) ? fileName.substring(dotIdx) : "";
+    pruneArchiveFiles(activeFile.getParentFile(), stem, ext);
+  }
+  catch (Exception e)
+  {
+    writeToLog("PRUNE EXCEPTION on " + activePath + " - " + e.getMessage());
+  }
+}
+
+private void archiveAndPrune(String activePath, String label)
+{
+  archiveFile(activePath, label);
+  pruneArchives(activePath);
+}
+
+private String resolveLogPath()
+{
+  return ordSlot("logFilePath", "file:^logs/" + LOG_TAG + ".log");
+}
+
+private int resolveMaxArchives()
+{
+  return intSlot("maxArchives", 10);
+}
+
+private void writeToLog(String message)
+{
+  appendLine(resolveLogPath(), "[" + now() + "] " + message);
+}
+
+// Log file + Application Director in one call.
+private void logInfo(String message)
+{
+  log.info("[" + LOG_TAG + "] " + message);
+  writeToLog(message);
+}
+
+private void logWarn(String message)
+{
+  log.warning("[" + LOG_TAG + "] " + message);
+  writeToLog(message);
+}
+
+private void logError(String message)
+{
+  log.severe("[" + LOG_TAG + "] " + message);
+  writeToLog(message);
+}
+
+// One CSV field. Quotes when needed, and guards text that a spreadsheet
+// would run as a formula (= + - @ first) with a leading apostrophe.
+// Numbers such as -0.27 are left as numbers.
+private String csvEscape(String s)
+{
+  if (s == null) s = "";
+  if (s.length() > 0 && "=+-@\t\r".indexOf(s.charAt(0)) >= 0 && !looksNumeric(s))
+    s = "'" + s;
+  if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 ||
+      s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0)
+    return '"' + s.replace("\"", "\"\"") + '"';
+  return s;
+}
+
+private boolean looksNumeric(String s)
+{
+  try
+  {
+    Double.parseDouble(s.trim());
+    return true;
+  }
+  catch (Exception e)
+  {
+    return false;
+  }
+}
+
+// Quote-aware CSV row parser ("a, ""b"", c" style). Fields are trimmed.
+private String[] parseCsvRow(String line)
+{
+  if (line == null) return new String[0];
+  java.util.ArrayList fields = new java.util.ArrayList();
+  StringBuffer cur = new StringBuffer();
+  boolean inQuote = false;
+  int n = line.length();
+  for (int i = 0; i < n; i++)
+  {
+    char c = line.charAt(i);
+    if (inQuote)
+    {
+      if (c == '"')
+      {
+        if (i + 1 < n && line.charAt(i + 1) == '"') { cur.append('"'); i++; }
+        else inQuote = false;
+      }
+      else cur.append(c);
+    }
+    else
+    {
+      if (c == ',')
+      {
+        fields.add(cur.toString());
+        cur.setLength(0);
+      }
+      else if (c == '"' && cur.length() == 0) inQuote = true;
+      else cur.append(c);
+    }
+  }
+  fields.add(cur.toString());
+  String[] out = new String[fields.size()];
+  for (int i = 0; i < fields.size(); i++) out[i] = ((String) fields.get(i)).trim();
+  return out;
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Deletes the oldest <stem>_yyyy-MM-dd_HH-mm-ss<ext> files in dir beyond
+// maxArchives. 0 or negative = keep all.
+private void pruneArchiveFiles(java.io.File parent, String stem, String ext)
+{
+  try
+  {
+    int max = resolveMaxArchives();
+    if (max <= 0) return;
+    if (parent == null || !parent.isDirectory()) return;
+    int expectedLen = stem.length() + 1 + 19 + ext.length();
+
+    java.io.File[] listed = parent.listFiles();
+    if (listed == null) return;
+
+    java.util.ArrayList names = new java.util.ArrayList();
+    for (int i = 0; i < listed.length; i++)
+    {
+      java.io.File f = listed[i];
+      if (!f.isFile()) continue;
+      String n = f.getName();
+      if (n.length() != expectedLen) continue;
+      if (!n.startsWith(stem + "_")) continue;
+      if (ext.length() > 0 && !n.endsWith(ext)) continue;
+      if (n.equals(stem + ext)) continue;            // never the active file
+      names.add(n);
+    }
+    if (names.size() <= max) return;
+
+    String[] sorted = new String[names.size()];
+    for (int i = 0; i < sorted.length; i++) sorted[i] = (String) names.get(i);
+    java.util.Arrays.sort(sorted);                   // timestamp order
+
+    int toDelete = sorted.length - max;
+    for (int i = 0; i < toDelete; i++)
+    {
+      java.io.File f = new java.io.File(parent, sorted[i]);
+      try
+      {
+        if (f.delete()) writeToLog("PRUNED archive: " + sorted[i]);
+        else            writeToLog("PRUNE WARN: could not delete " + sorted[i]);
+      }
+      catch (Exception e)
+      {
+        writeToLog("PRUNE ERROR: " + sorted[i] + " - " + e.getMessage());
+      }
+    }
+  }
+  catch (Exception e)
+  {
+    writeToLog("PRUNE EXCEPTION in " + parent + " - " + e.getMessage());
+  }
+}
+
+// An output slot that may name a file or a folder (csvFile, configFile...).
+// Folder = an existing folder, a path ending in / or \, or a last part with
+// no dot (file:^reports). In a folder the file is defaultName, or with
+// timestamped = true <stem>_yyyy-MM-dd_HH-mm-ss<ext> (one per run - prune
+// with pruneArchiveFiles). Null if refused (lastPathError says why).
+private java.io.File resolveOutputFile(String pathOrOrd, String defaultName,
+                                       boolean timestamped)
+{
+  java.io.File f = resolveToFile(pathOrOrd);
+  if (f == null) return null;
+  String p = pathOrOrd.trim();
+  boolean isDir = p.endsWith("/") || p.endsWith("\\") || f.isDirectory() ||
+                  f.getName().indexOf('.') < 0;
+  if (!isDir) return f;
+  String name = timestamped ? buildTimestampedArchivePath(defaultName) : defaultName;
+  return new java.io.File(f, name);
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// status slot + App Director + log file in one call: "[time] message".
+private void reportInfo(String message)
+{
+  setStatus("[" + now() + "] " + message);
+  logInfo(message);
+}
+
+private void reportWarn(String message)
+{
+  setStatus("[" + now() + "] " + message);
+  logWarn(message);
+}
+
+private void reportError(String message)
+{
+  setStatus("[" + now() + "] " + message);
+  logError(message);
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Writes text to f (UTF-8, overwrites), creating the folder if needed.
+// Get f from resolveToFile / resolveOutputFile so it is station-home only.
+private void writeTextFile(java.io.File f, String text) throws Exception
+{
+  java.io.File parent = f.getParentFile();
+  if (parent != null && !parent.exists()) parent.mkdirs();
+  java.io.FileOutputStream os = new java.io.FileOutputStream(f, false);
+  try { os.write(text.getBytes("UTF-8")); }
+  finally { os.close(); }
+}
+
+// After writing a per-run file from resolveOutputFile(..., true): if its
+// name is <stem>_yyyy-MM-dd_HH-mm-ss<ext>, keep only the newest maxArchives
+// of that stem in its folder. A fixed file name is left alone.
+private void pruneRunFiles(java.io.File written)
+{
+  if (written == null) return;
+  String n = written.getName();
+  java.util.regex.Matcher m = java.util.regex.Pattern
+    .compile("^(.+)_\\d{4}-\\d\\d-\\d\\d_\\d\\d-\\d\\d-\\d\\d(\\.[^.]*)?$").matcher(n);
+  if (!m.matches()) return;
+  pruneArchiveFiles(written.getParentFile(), m.group(1),
+                    m.group(2) == null ? "" : m.group(2));
 }
