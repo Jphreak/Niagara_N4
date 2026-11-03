@@ -1,6 +1,7 @@
-Mailer v1.02 - Slot Sheet (complete, for a new Mailer program)
+Mailer v1.03 - Slot Sheet (complete, for a new Mailer program)
 ===============================================================
-No slot changes from v1.01.
+From v1.02: add 2 slots - logFilePath (baja:Ord) and maxArchives
+(baja:Integer). No import changes.
 
 Imports
 -------
@@ -14,7 +15,7 @@ Already on every Program (leave as is)
   execute   Action                Frozen. Does nothing on Mailer - you can
                                   set its Hidden flag to hide it.
 
-Add these 19 slots
+Add these 21 slots
 ------------------
 Flags column: r = Read Only (blank = no flags)
 
@@ -33,18 +34,27 @@ baja:String  (11)
   10  version       version        r
   11  quickGuide    quickGuide     r      multiLine=true,fieldWidth=75
 
-baja:Ord  (1)
+baja:Ord  (2)
   #   Name          Display Name   Flags  Facets / Default
   --  ------------  -------------  -----  -------------------------------
   12  configFile    configFile            a file, or a folder to save
                                           <this program's name>.properties
                                           in; blank = file:^Mailer_Config
+  12b logFilePath   logFilePath           blank = file:^logs/Mailer.log
+                                          (one log per Send / Dry Run)
+                                                                   (NEW)
+
+baja:Integer  (1)
+  #   Name          Display Name   Flags  Facets / Default
+  --  ------------  -------------  -----  -------------------------------
+  12c maxArchives   maxArchives           min=0, fieldWidth=5; default 10
+                                          (old logs kept; 0 = keep all)
                                                                    (NEW)
 
 baja:Boolean  (1)
   #   Name          Display Name   Flags  Facets / Default
   --  ------------  -------------  -----  -------------------------------
-  13  latestOnly    latestOnly            default false            (NEW)
+  13  latestOnly    latestOnly            default false
 
 baja:DynamicEnum  (1)
   #   Name          Display Name   Flags  Facets
@@ -59,10 +69,10 @@ Actions  (5, all void / no argument)
   15  send             Send Now
   16  dryRun           Dry Run - No Send
   17  refreshAccounts  Refresh Accounts
-  18  saveConfig       Save Config                          (NEW)
-  19  loadConfig       Load Config                          (NEW)
+  18  saveConfig       Save Config
+  19  loadConfig       Load Config
 
-(That's 11 Strings + 1 Ord + 1 Boolean + 1 DynamicEnum + 5 Actions = 19.)
+(That's 11 Strings + 2 Ords + 1 Integer + 1 Boolean + 1 DynamicEnum + 5 Actions = 21.)
 
 What goes in the fields
 -----------------------
