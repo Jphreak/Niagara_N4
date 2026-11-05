@@ -1,5 +1,8 @@
-ForceRemove4AX v3.2-AX - Slot Sheet (complete, for a new ForceRemove4AX program)
+ForceRemove4AX v3.3-AX - Slot Sheet (complete, for a new ForceRemove4AX program)
 ================================================================================
+
+No slot or import changes from v3.2-AX: paste the v3.3-AX code into the
+existing program and compile.
 
 Imports
 -------

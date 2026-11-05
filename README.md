@@ -6,9 +6,9 @@ Program Objects for Tridium Niagara N4 (4.15) and AX (3.5–3.8).
 
 | Program | Version | What it does |
 |---|---|---|
-| ForceRemove | v3.3 (N4), v3.2 (AX) | Bulk-removes components, points or extensions (Direct, BQL, CSV). Backs up first; Reverse restores, links keep their names. |
-| ComponentCopier | v3.3 (N4), v3.2 (AX) | Copies components to one or many destinations, with an optional links CSV. Reverse undoes it. |
-| Linker | v3.3 (N4), v3.2 (AX) | Creates, verifies or removes links (Direct, BQL, CSV). Reverse undoes it. |
+| ForceRemove | v3.3 (N4, AX) | Bulk-removes components, points or extensions (Direct, BQL, CSV). Backs up first; Reverse restores, links keep their names. |
+| ComponentCopier | v3.3 (N4, AX) | Copies components to one or many destinations, with an optional links CSV. Reverse undoes it. |
+| Linker | v3.3 (N4, AX) | Creates, verifies or removes links (Direct, BQL, CSV). Reverse undoes it. |
 | ZoneTempDelta | v1.01 (N4) | Per-VAV zone temp minus setpoint, in-range flag, equipment and building names. |
 | Mailer | v1.03 (N4) | Emails station files through the EmailService, with per-file recipients (To / Cc / Bcc). |
 
