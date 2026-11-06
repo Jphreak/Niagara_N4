@@ -12,11 +12,13 @@ Program Objects for Tridium Niagara N4 (4.15) and AX (3.5–3.8).
 | Mailer | v1.03 (N4) | Emails station files through the EmailService, with per-file recipients (To / Cc / Bcc). |
 
 The tools (ForceRemove, ComponentCopier, Linker, Mailer) have a Dry Run action;
-on-station help is in each program's quickGuide slot.
+on-station help is in each program's quickGuide slot, and the full user guide
+is next to its code.
 
 ## Layout
 
-- `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code and slot sheet
+- `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code, slot sheet and
+  `<Program>_UserGuide.md` (every field explained, with complete setups)
 - `Precompiled Bogs/` — ready-made programs to drop into a station
 
 ## Using a program
