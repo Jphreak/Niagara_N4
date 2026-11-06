@@ -17,8 +17,9 @@ is next to its code.
 
 ## Layout
 
-- `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code, slot sheet and
-  `<Program>_UserGuide.md` (every field explained, with complete setups)
+- `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code and slot sheet.
+  The user guide, `Raw Code/N4/<Program>/<Program>_UserGuide.md` (every field
+  explained, with complete setups), covers the AX version too - see its AX notes
 - `Precompiled Bogs/` — ready-made programs to drop into a station, with a PDF user
   guide for each (`ForceRemove_UserGuide.pdf`, `ComponentCopier_UserGuide.pdf`,
   `Linker_UserGuide.pdf`, `Mailer_UserGuide.pdf` — the N4 and AX bogs share one guide)
