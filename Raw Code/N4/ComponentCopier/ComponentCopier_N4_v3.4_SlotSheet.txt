@@ -1,4 +1,4 @@
-ComponentCopier v3.3 - Slot Sheet (complete, for a new ComponentCopier program)
+ComponentCopier v3.4 - Slot Sheet (complete, for a new ComponentCopier program)
 ===============================================================================
 
 No slot or import changes from v3.2: paste the v3.3 code into the
@@ -93,3 +93,7 @@ Display names: set them with Rename Display Name on each slot
 
 After adding slots: paste the code and compile. Run Dry Run, then
 Verify, before Execute.
+
+-------------------------------------------------------------------------------
+ Property sheet order (v3.4): the program sorts its own slots on start -
+ about: version, quickGuide; last run: status; what to copy, and where: destinationMode, componentSource, copyTo, keepAllLinks; links after the copy: linksCsvPath; files and logs: logFilePath, resultsCsvPath, linkerLogPath, linkerResultsCsvPath, sampleCsvPath, maxArchives. Add slots in any order; no Reorder needed.

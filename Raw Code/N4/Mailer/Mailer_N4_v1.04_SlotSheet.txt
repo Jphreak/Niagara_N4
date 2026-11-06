@@ -1,4 +1,4 @@
-Mailer v1.03 - Slot Sheet (complete, for a new Mailer program)
+Mailer v1.04 - Slot Sheet (complete, for a new Mailer program)
 ===============================================================
 From v1.02: add 2 slots - logFilePath (baja:Ord) and maxArchives
 (baja:Integer). No import changes.
@@ -110,3 +110,7 @@ once so the sender drop-down fills in.
 Moving to a new Mailer: on the old one run Save Config. On the new one
 set configFile to the same path (or give it the same name and leave
 configFile blank), compile, then run Load Config.
+
+-------------------------------------------------------------------------------
+ Property sheet order (v1.04): the program sorts its own slots on start -
+ about: version, quickGuide; last send: status, lastSent; who it comes from: sender, fromAddress; what to send: files, latestOnly; who gets it: to, cc, bcc; the message: subject, body; saved settings and logs: configFile, logFilePath, maxArchives. Add slots in any order; no Reorder needed.

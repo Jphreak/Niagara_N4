@@ -2,8 +2,8 @@
 ================================================================================
 Program: ForceRemove (Direct / BQL / CSV) - Niagara N4.15
 Author:  F. Lacroix
-Version: v3.3
-Date:    2026-10-31
+Version: v3.4
+Date:    2026-11-05
 
 Changes
 -------
@@ -50,6 +50,10 @@ Changes
            name: those links get the Linker / Copier name, so Linker and Copier
            verify and reverse find restored links. Links a restored component
            already carries are no longer duplicated.
+  v3.4   Property sheet in a sensible order: on start the program sorts its
+         own slots (Common order tier, orderSlots): about, last run, what
+         to remove, files and logs, backups (reverse). Copies and upgraded
+         objects sort themselves. No slot or import changes.
 
 Purpose
 -------
@@ -130,7 +134,22 @@ Quick start
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("ForceRemove");
 
-private static final String VERSION = "v3.3";
+private static final String VERSION = "v3.4";
+
+// Property-sheet order (Common orderSlots): grouped the way a user reads it.
+// Slots not listed (internal ones, or added later) go after these.
+private static final String[] SLOT_ORDER = {
+  // about
+  "version", "quickGuide",
+  // last run
+  "status",
+  // what to remove
+  "operationMode", "targetOrd", "targetList", "nameFilter", "typeFilter",
+  // files and logs
+  "logFilePath", "resultsCsvPath", "sampleCsvPath", "maxArchives",
+  // backups (reverse)
+  "ForceRemoveBackup"
+};
 private static final String LOG_TAG = "ForceRemove";
 // On-station user help -- written into the read-only quickGuide slot
 // during onStart() so it shows up at the bottom of the property sheet.
@@ -3151,6 +3170,7 @@ public void onStart() throws Exception
 {
   updateVersion();
   updateQuickGuide();
+  orderSlots(SLOT_ORDER);
   setStatus("[" + now() + "] Ready");
   log.info("[ForceRemove] " + VERSION + " Service started - Ready");
   writeToLog(VERSION + " Service started - Ready");
@@ -3503,15 +3523,25 @@ private void writeTextFile(java.io.File f, String text) throws Exception
 // After writing a per-run file from resolveOutputFile(..., true): if its
 // name is <stem>_yyyy-MM-dd_HH-mm-ss<ext>, keep only the newest maxArchives
 // of that stem in its folder. A fixed file name is left alone.
+// No regex: the AX JACE compiler (J2ME) has no java.util.regex.
 private void pruneRunFiles(java.io.File written)
 {
   if (written == null) return;
   String n = written.getName();
-  java.util.regex.Matcher m = java.util.regex.Pattern
-    .compile("^(.+)_\\d{4}-\\d\\d-\\d\\d_\\d\\d-\\d\\d-\\d\\d(\\.[^.]*)?$").matcher(n);
-  if (!m.matches()) return;
-  pruneArchiveFiles(written.getParentFile(), m.group(1),
-                    m.group(2) == null ? "" : m.group(2));
+  int dot = n.lastIndexOf('.');
+  String ext = dot >= 0 ? n.substring(dot) : "";
+  String base = dot >= 0 ? n.substring(0, dot) : n;
+  String stamp = "_dddd-dd-dd_dd-dd-dd";              // d = digit
+  if (base.length() <= stamp.length()) return;
+  String tail = base.substring(base.length() - stamp.length());
+  for (int i = 0; i < stamp.length(); i++)
+  {
+    char want = stamp.charAt(i);
+    char c = tail.charAt(i);
+    if (want == 'd' ? (c < '0' || c > '9') : c != want) return;
+  }
+  pruneArchiveFiles(written.getParentFile(),
+                    base.substring(0, base.length() - stamp.length()), ext);
 }
 
 // ============================================ COMMON (sync_common.py) ===
@@ -3578,4 +3608,75 @@ private String undoReverseRow(String[] r)
     return "FAILED (" + describeException(t) + ")";
   }
   return "REMOVED";
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Puts this program's dynamic slots in the order a user should read them on
+// the property sheet. Call from onStart:  orderSlots(SLOT_ORDER);
+// Names not on this program are skipped; slots not listed keep their current
+// order after the listed ones. Does nothing when the order is already right,
+// so it is safe on every start (a copied or upgraded object gets sorted too).
+private void orderSlots(String[] names)
+{
+  try
+  {
+    javax.baja.sys.BComponent c = getComponent();
+    javax.baja.sys.Property[] cur = c.getDynamicPropertiesArray();
+    java.util.ArrayList out = new java.util.ArrayList();
+    for (int i = 0; i < names.length; i++)
+      for (int k = 0; k < cur.length; k++)
+        if (cur[k].getName().equals(names[i]) && !out.contains(cur[k]))
+          out.add(cur[k]);
+    for (int k = 0; k < cur.length; k++)
+      if (!out.contains(cur[k])) out.add(cur[k]);
+    boolean same = true;
+    for (int k = 0; k < cur.length; k++)
+      if (out.get(k) != cur[k]) { same = false; break; }
+    if (same) return;
+    javax.baja.sys.Property[] order = new javax.baja.sys.Property[out.size()];
+    for (int k = 0; k < order.length; k++) order[k] = (javax.baja.sys.Property) out.get(k);
+    c.reorder(order);
+  }
+  catch (Throwable ignore) {}
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Text of a station file named by an ord (file:^Csv/x.csv, local:|file:^..., or
+// ^Csv/x.csv). Read through the station's own file space, so nothing outside
+// the station can be read. A UTF-8 byte-order mark (Excel's "CSV UTF-8") is
+// dropped. Throws with a plain message: not found, a folder, or too big.
+private String readOrdText(String ord, int maxBytes) throws Exception
+{
+  String o = (ord == null) ? "" : ord.trim();
+  if (o.length() == 0) throw new java.io.IOException("no file given");
+  if (o.startsWith("^")) o = "file:" + o;
+  Object f = null;
+  try { f = javax.baja.naming.BOrd.make(o).resolve().get(); }
+  catch (Exception e) { throw new java.io.IOException("file not found: " + ord); }
+  if (!(f instanceof javax.baja.file.BIFile))
+    throw new java.io.IOException("not a file: " + ord);
+  javax.baja.file.BIFile bf = (javax.baja.file.BIFile) f;
+  if (bf.isDirectory()) throw new java.io.IOException("that is a folder, not a file: " + ord);
+  if (bf.getSize() > maxBytes)
+    throw new java.io.IOException("file is bigger than " + (maxBytes / 1024) + " KB: " + ord);
+  java.io.InputStream in = bf.getInputStream();
+  try
+  {
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+    byte[] b = new byte[8192];
+    int n;
+    while ((n = in.read(b)) > 0)
+    {
+      if (buf.size() + n > maxBytes)
+        throw new java.io.IOException("file is bigger than " + (maxBytes / 1024) + " KB: " + ord);
+      buf.write(b, 0, n);
+    }
+    String s = new String(buf.toByteArray(), "UTF-8");
+    if (s.length() > 0 && s.charAt(0) == '\uFEFF') s = s.substring(1);
+    return s;
+  }
+  finally
+  {
+    try { in.close(); } catch (Exception ignore) {}
+  }
 }

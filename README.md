@@ -6,10 +6,10 @@ Program Objects for Tridium Niagara N4 (4.15) and AX (3.5–3.8).
 
 | Program | Version | What it does |
 |---|---|---|
-| ForceRemove | v3.3 (N4, AX) | Bulk-removes components, points or extensions (Direct, BQL, CSV). Backs up first; Reverse restores, links keep their names. |
-| ComponentCopier | v3.3 (N4, AX) | Copies components to one or many destinations, with an optional links CSV. Reverse undoes it. |
-| Linker | v3.3 (N4, AX) | Creates, verifies or removes links (Direct, BQL, CSV). Reverse undoes it. |
-| Mailer | v1.03 (N4) | Emails station files through the EmailService, with per-file recipients (To / Cc / Bcc). |
+| ForceRemove | v3.4 (N4), v3.3 (AX) | Bulk-removes components, points or extensions (Direct, BQL, CSV). Backs up first; Reverse restores, links keep their names. |
+| ComponentCopier | v3.4 (N4), v3.3 (AX) | Copies components to one or many destinations, with an optional links CSV. Reverse undoes it. |
+| Linker | v3.4 (N4), v3.3 (AX) | Creates, verifies or removes links (Direct, BQL, CSV). Reverse undoes it. |
+| Mailer | v1.04 (N4) | Emails station files through the EmailService, with per-file recipients (To / Cc / Bcc). |
 
 The tools (ForceRemove, ComponentCopier, Linker, Mailer) have a Dry Run action;
 on-station help is in each program's quickGuide slot, and the full user guide

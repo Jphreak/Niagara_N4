@@ -2,8 +2,8 @@
 ================================================================================
 Program: Mailer - Niagara N4.15
 Author:  F. Lacroix
-Version: v1.03
-Date:    2026-10-31
+Version: v1.04
+Date:    2026-11-05
 
 Changes
 -------
@@ -37,6 +37,11 @@ Changes
          domain, no spaces) before anything is queued - a bad one fails
          the send with "bad address: ..." instead of the EmailService
          discarding it after Mailer reported SENT.
+  v1.04  Property sheet in a sensible order: on start the program sorts its
+         own slots (Common order tier, orderSlots): about, last send, who
+         it comes from, what to send, who gets it, the message, saved
+         settings and logs. Copies and upgraded objects sort themselves. No
+         slot or import changes.
 
 Purpose
 -------
@@ -182,7 +187,26 @@ Slot Sheet
 ================================================================================
 */
 
-private static final String VERSION = "v1.03";
+private static final String VERSION = "v1.04";
+
+// Property-sheet order (Common orderSlots): grouped the way a user reads it.
+// Slots not listed (internal ones, or added later) go after these.
+private static final String[] SLOT_ORDER = {
+  // about
+  "version", "quickGuide",
+  // last send
+  "status", "lastSent",
+  // who it comes from
+  "sender", "fromAddress",
+  // what to send
+  "files", "latestOnly",
+  // who gets it
+  "to", "cc", "bcc",
+  // the message
+  "subject", "body",
+  // saved settings and logs
+  "configFile", "logFilePath", "maxArchives"
+};
 private static final String LOG_TAG = "Mailer";
 private static final java.util.logging.Logger log =
   java.util.logging.Logger.getLogger("Mailer");
@@ -235,6 +259,7 @@ public void onStart() throws Exception
 {
   setVersion(VERSION);
   setQuickGuide(QUICK_GUIDE);
+  orderSlots(SLOT_ORDER);
   refreshSenderList();
 }
 
@@ -1630,13 +1655,53 @@ private void writeTextFile(java.io.File f, String text) throws Exception
 // After writing a per-run file from resolveOutputFile(..., true): if its
 // name is <stem>_yyyy-MM-dd_HH-mm-ss<ext>, keep only the newest maxArchives
 // of that stem in its folder. A fixed file name is left alone.
+// No regex: the AX JACE compiler (J2ME) has no java.util.regex.
 private void pruneRunFiles(java.io.File written)
 {
   if (written == null) return;
   String n = written.getName();
-  java.util.regex.Matcher m = java.util.regex.Pattern
-    .compile("^(.+)_\\d{4}-\\d\\d-\\d\\d_\\d\\d-\\d\\d-\\d\\d(\\.[^.]*)?$").matcher(n);
-  if (!m.matches()) return;
-  pruneArchiveFiles(written.getParentFile(), m.group(1),
-                    m.group(2) == null ? "" : m.group(2));
+  int dot = n.lastIndexOf('.');
+  String ext = dot >= 0 ? n.substring(dot) : "";
+  String base = dot >= 0 ? n.substring(0, dot) : n;
+  String stamp = "_dddd-dd-dd_dd-dd-dd";              // d = digit
+  if (base.length() <= stamp.length()) return;
+  String tail = base.substring(base.length() - stamp.length());
+  for (int i = 0; i < stamp.length(); i++)
+  {
+    char want = stamp.charAt(i);
+    char c = tail.charAt(i);
+    if (want == 'd' ? (c < '0' || c > '9') : c != want) return;
+  }
+  pruneArchiveFiles(written.getParentFile(),
+                    base.substring(0, base.length() - stamp.length()), ext);
+}
+
+// ============================================ COMMON (sync_common.py) ===
+// Puts this program's dynamic slots in the order a user should read them on
+// the property sheet. Call from onStart:  orderSlots(SLOT_ORDER);
+// Names not on this program are skipped; slots not listed keep their current
+// order after the listed ones. Does nothing when the order is already right,
+// so it is safe on every start (a copied or upgraded object gets sorted too).
+private void orderSlots(String[] names)
+{
+  try
+  {
+    javax.baja.sys.BComponent c = getComponent();
+    javax.baja.sys.Property[] cur = c.getDynamicPropertiesArray();
+    java.util.ArrayList out = new java.util.ArrayList();
+    for (int i = 0; i < names.length; i++)
+      for (int k = 0; k < cur.length; k++)
+        if (cur[k].getName().equals(names[i]) && !out.contains(cur[k]))
+          out.add(cur[k]);
+    for (int k = 0; k < cur.length; k++)
+      if (!out.contains(cur[k])) out.add(cur[k]);
+    boolean same = true;
+    for (int k = 0; k < cur.length; k++)
+      if (out.get(k) != cur[k]) { same = false; break; }
+    if (same) return;
+    javax.baja.sys.Property[] order = new javax.baja.sys.Property[out.size()];
+    for (int k = 0; k < order.length; k++) order[k] = (javax.baja.sys.Property) out.get(k);
+    c.reorder(order);
+  }
+  catch (Throwable ignore) {}
 }
