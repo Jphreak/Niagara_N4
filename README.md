@@ -24,11 +24,10 @@ is next to its code.
 - `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code and slot sheet.
   The user guide, `Raw Code/N4/<Program>/<Program>_UserGuide.md` (every field
   explained, with complete setups), covers the AX version too - see its AX notes
-- `Precompiled Bogs/` — ready-made programs to drop into a station, with a PDF user
-  guide for each (`ForceRemove_UserGuide.pdf`, `ComponentCopier_UserGuide.pdf`,
-  `Linker_UserGuide.pdf`, `Mailer_UserGuide.pdf`, `SetFlagAudit_UserGuide.pdf`,
-  `SetFlagEditor_UserGuide.pdf`, `SlotRenamerDisplayName_UserGuide.pdf` — the N4 and
-  AX bogs share one guide)
+- `Precompiled Bogs/<Program>/` — ready-made programs to drop into a station: the
+  bog(s) and the program's PDF user guide together, e.g.
+  `Precompiled Bogs/Linker/` holds `Linker_N4.bog`, `Linker4AX.bog` and
+  `Linker_UserGuide.pdf` (the N4 and AX bogs share one guide)
 
 ## Using a program
 
