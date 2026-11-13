@@ -3,7 +3,7 @@
 SetFlagAudit is a Niagara Program Object that reports the **slot flags** (operator,
 hidden, readonly, confirmRequired…) on a slot — usually the `set` action — across many
 components, and shows which ones differ from the type's defaults. It changes nothing.
-Its companion [SetFlagEditor](../SetFlagEditor/SetFlagEditor_UserGuide.md) makes the changes.
+Its companion SetFlagEditor (see its own user guide) makes the changes.
 
 Covers **N4 v1.01 – v1.03**.
 

@@ -17,23 +17,33 @@ Program Objects for Tridium Niagara N4 (4.15) and AX (3.5–3.8).
 The tools (ForceRemove, ComponentCopier, Linker, Mailer, SetFlagEditor,
 SlotRenamerDisplayName) have a Dry Run action;
 on-station help is in each program's quickGuide slot, and the full user guide
-is next to its code.
+is in each program's folder (PDF next to the bog, Markdown next to the code).
 
 ## Layout
 
-- `Raw Code/N4/<Program>/`, `Raw Code/AX/<Program>/` — source code and slot sheet.
-  The user guide, `Raw Code/N4/<Program>/<Program>_UserGuide.md` (every field
-  explained, with complete setups), covers the AX version too - see its AX notes
-- `Precompiled Bogs/<Program>/` — ready-made programs to drop into a station: the
-  bog(s) and the program's PDF user guide together, e.g.
-  `Precompiled Bogs/Linker/` holds `Linker_N4.bog`, `Linker4AX.bog` and
-  `Linker_UserGuide.pdf` (the N4 and AX bogs share one guide)
+One folder per program:
+
+```
+Linker/
+  Linker_N4.bog            ready-made program (N4)
+  Linker4AX.bog            ready-made program (AX)
+  Linker_UserGuide.pdf     user guide - every field explained, complete setups
+  Raw Code/
+    Linker_N4_v3.4.java            source (N4) + its slot sheet
+    Linker_N4_v3.4_SlotSheet.txt
+    Linker4AX_v3.3.java            source (AX) + its slot sheet
+    Linker4AX_v3.3_SlotSheet.txt
+    Linker_UserGuide.md            the same guide as Markdown
+```
+
+The N4 and AX versions share one guide (see its AX notes). Programs without an
+AX version have only the N4 files.
 
 ## Using a program
 
 - **Bog:** open it in Workbench and copy the program into the station.
 - **Raw Code:** add a new Program Object, add the imports and slots from the
-  slot sheet, paste the `.java` code, compile.
+  slot sheet in `<Program>/Raw Code/`, paste the `.java` code, compile.
 
 Back up the station before running ForceRemove, ComponentCopier, Linker,
 SetFlagEditor or SlotRenamerDisplayName, and try Dry Run first.

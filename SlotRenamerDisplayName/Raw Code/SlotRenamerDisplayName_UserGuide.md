@@ -1,6 +1,6 @@
 # SlotRenamerDisplayName — User Guide
 
-SlotRenamerDisplayName uses the same search as [SetFlagEditor](../SetFlagEditor/SetFlagEditor_UserGuide.md),
+SlotRenamerDisplayName uses the same search as SetFlagEditor (see its own user guide),
 then **changes the display name of chosen slots** on every component it finds — e.g. the
 `set` action of every writable point shows **Set Setpoint** instead of **Set**. Dry Run
 previews it; Reverse undoes the last live run.

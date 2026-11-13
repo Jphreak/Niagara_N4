@@ -1,6 +1,6 @@
 # SetFlagEditor — User Guide
 
-SetFlagEditor is the companion to [SetFlagAudit](../SetFlagAudit/SetFlagAudit_UserGuide.md). It uses the
+SetFlagEditor is the companion to SetFlagAudit (see its own user guide). It uses the
 same search, then **adds, removes or resets slot flags** (operator, hidden,
 confirmRequired…) on every slot it finds — e.g. take `operator` off every setpoint's
 `set` action. Dry Run previews it; Reverse undoes the last live run.
