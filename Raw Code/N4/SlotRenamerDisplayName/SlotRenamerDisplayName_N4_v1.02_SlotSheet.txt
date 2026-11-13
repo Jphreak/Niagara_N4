@@ -1,0 +1,190 @@
+SlotRenamerDisplayName v1.02 - Slot Sheet (complete, for a new program)
+=======================================================================
+From any earlier version: no slot or import changes - paste the new
+code and compile.
+v1.02: Filter by Name uses * wildcards (no longer "contains" - SETTERS
+       only matches SETTERS; use SETTERS* for SETTERS1, SETTERS2 ...).
+       Rules can name their points:  Boiler*.set = Boiler Enable
+
+Companion to SetFlagEditor: same search, but changes slot DISPLAY NAMES
+(e.g. the Set action of every writable point -> "Set Setpoint").
+Dry Run first, Execute, then save the station. Reverse undoes the last
+live run. Leave Execute On Change OFF.
+
+Imports
+-------
+  Package names only (the editor appends ".*"):
+    javax.baja.sys
+    javax.baja.naming
+    java.util
+  Same as SetFlagEditor. Nothing else to add (BNameMap / BFormat are
+  written with their full names, javax.baja.util.BNameMap).
+
+Already on every Program (leave as is)
+--------------------------------------
+  code      program:ProgramCode   Frozen
+  execute   Action                Frozen. = the LIVE run (display name
+                                  "Execute")
+
+Add these 19 slots
+------------------
+Flags column: r = Read Only (blank = no flags)
+
+baja:String  (8)
+  #   Name          Display Name                  Flags  Facets / Default
+  --  ------------  ----------------------------  -----  ------------------------------
+   1  version       Version                       r      fieldWidth=10
+   2  quickGuide    quickGuide                    r      multiLine=true, fieldWidth=75
+   3  status        Status                        r      fieldWidth=120
+   4  lastRun       LastRun                       r      fieldWidth=20
+   5  summary       Summary                       r      fieldWidth=120
+   6  results       Results                       r      multiLine=true, fieldWidth=120
+   7  nameFilter    Filter by Name (Blank = All)
+   8  renames       Rename Rules                         multiLine=true, fieldWidth=80
+                                                         default: set = Set Setpoint
+
+baja:Ord  (3)
+  #   Name          Display Name                  Flags  Facets / Default
+  --  ------------  ----------------------------  -----  ------------------------------
+   9  rootOrd       Root Location or BQL                 station:|slot:/Drivers
+  10  csvFile       Output CSV file                      file:^NameEdits.csv
+  11  logFilePath   Log File                             blank = file:^logs/SlotRenamerDisplayName.log
+                                                         (one log per run)
+
+baja:Integer  (5)
+  #   Name          Display Name                  Flags  Facets / Default
+  --  ------------  ----------------------------  -----  ------------------------------
+  12  maxResults    Max. Results                         default 0
+  13  maxArchives   Max Archives                         min=0, fieldWidth=5; default 10
+  14  scanned       Components Scanned            r      fieldWidth=10
+  15  matched       Slots Matched                 r      fieldWidth=10
+  16  changed       Slots Changed                 r      fieldWidth=10
+
+baja:Boolean  (1)
+  #   Name          Display Name                  Flags  Facets / Default
+  --  ------------  ----------------------------  -----  ------------------------------
+  17  skipRenamed   Already Renamed                      trueText=Skip, falseText=Overwrite
+                                                         default true
+
+Actions  (2 to add, both void / no argument)
+  #   Name          Display Name                  Handler
+  --  ------------  ----------------------------  -------------
+  18  dryRun        Dry Run                       onDryRun()   preview, writes nothing
+  19  reverse       Reverse                       onReverse()  undo the last live Execute
+  (execute is already there: onExecute() = LIVE)
+
+(8 Strings + 3 Ords + 5 Integers + 1 Boolean + 2 Actions = 19.)
+
+Generated getters used directly (must exist or the compile fails):
+  nameFilter, renames, skipRenamed, maxResults, csvFile, status
+Written / read by name (missing = reported in Status, compile OK):
+  rootOrd, results, summary, lastRun, scanned, matched, changed,
+  version, quickGuide, logFilePath, maxArchives
+The program sorts its own property sheet on start.
+
+
+What goes in the fields
+-----------------------
+Root Location or BQL
+    Component  -> walks its whole subtree
+      station:|slot:/Drivers/BacnetNetwork
+    BQL / NEQL -> each row is walked as its own root
+      station:|slot:/Drivers|bql:select * from control:NumericWritable
+
+Filter by Name
+    Point (component) names, comma list. Blank = all.
+    * = wildcard, not case-sensitive:
+      Boiler       only Boiler
+      Boiler*      starts with Boiler
+      *Boiler      ends with Boiler
+      *Boiler*     has Boiler anywhere in the name
+      AHU*, *Pump* either
+    Test on one point first:  VAV_101
+
+Rename Rules
+    One rule per line (or ; between rules). # starts a comment line.
+      Boiler.set = Boiler Enable           only the point named Boiler
+      *Pump*.set = Pump Command            points with Pump in the name
+      set = Set Setpoint                   any other point
+      emergencyOverride = Emergency Override
+      emergencyAuto =
+    Left  = [point name.]slot NAME. The point name is optional and takes
+            the same * wildcards as Filter by Name; no point name = any
+            point. The slot name is as in the slot sheet Name column
+            (set, not Set). A name with spaces can be typed as shown.
+    The first rule that fits a point's slot wins - put the specific
+    (point-named) rules above the general ones. The same slot can be in
+    several rules with different point names.
+    Right = the new display name. Nothing after = puts the slot back to
+            its default display name.
+    New names can't contain  ;  {  }  =  %
+    A rule whose slot isn't on a component is ignored for that component,
+    so one rule list can cover numeric, boolean and enum writables.
+    A child component's name works too (its display name is renamed).
+
+Already Renamed
+    Skip       a slot that already has its own display name is left
+               alone (SKIPPED) - only default names are changed
+    Overwrite  rename those too
+    (Rules that reset to default always apply.)
+
+Max. Results
+    Caps CSV rows and Results lines only. Every matched slot is still
+    edited. 0 = no CSV cap, 200 Results lines.
+
+Output CSV file
+    File       file:^reports/NameEdits.csv  (overwritten each run)
+    Directory  file:^reports  (new SlotRenamerDisplayName_<ts>.csv per run;
+               newest Max Archives kept, 0 = all)
+    Must be under the station home. Blank = no CSV.
+
+
+Where the names are stored
+--------------------------
+  Same place Workbench's "Set Display Name" puts them: a hidden
+  "displayNames" slot (baja:NameMap) on the point that owns the slot,
+    {set=Set Setpoint;emergencyOverride=Emergency Override;}
+  Other entries already in that map are kept. The slot is created
+  (readonly, hidden, operator - as Workbench does) on the first name and
+  removed when its last name is reset.
+
+
+Outputs
+-------
+  Results            Name.slot : before -> after  [result]
+                       VAV_101.set : Set (default) -> Set Setpoint  [CHANGED]
+                       VAV_102.set : Command  [SKIPPED (already renamed)]
+                     "(default)" = the slot has no display name of its own
+  Summary            mode | Slots Matched | Changed (Would change) |
+                     No change | Skipped | Failed
+  Status             time, mode, counts, ms, CSV file, "SAVE THE STATION"
+                     after a live run with changes, MISSING SLOTS if an
+                     output slot is absent
+  Components Scanned components walked
+  Slots Matched      rule slots found on the matched components
+  Slots Changed      renamed (Dry Run: would be)
+
+CSV columns: Name, Path, Slot, Before, After, Result
+  Result: CHANGED / WOULD CHANGE / NO CHANGE / SKIPPED / FAILED (reason)
+  Reverse: REVERSED / SKIPPED / FAILED (reason)
+
+
+Reverse
+-------
+  - Every LIVE Execute that changes at least one slot overwrites
+      <station home>/logs/SlotRenamerDisplayName_<programName>_reverse.csv
+    (Path, Slot, Before, After). Dry Run never touches it.
+  - Reverse puts each slot back to its Before name, only if it still has
+    the After name. Anything renamed since is SKIPPED.
+  - The record is then renamed ..._reversed_<timestamp>.csv so it can't
+    be applied twice. Only the LAST live run can be reversed.
+  - Save the station after a live Reverse.
+
+
+Compile notes
+-------------
+  - First use on a site: one point (Filter by Name), Dry Run, Execute,
+    check the point's right-click Actions menu and slot sheet, then
+    widen the search.
+  - If Status shows "can't build displayNames ...", send the whole
+    Status line - it names what the station refused.

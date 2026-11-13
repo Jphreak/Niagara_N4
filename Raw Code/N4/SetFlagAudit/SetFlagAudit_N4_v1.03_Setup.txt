@@ -1,0 +1,180 @@
+=====================================================================
+ SetFlagAudit v1.03  -  Niagara 4.15.2 Program Object setup
+=====================================================================
+
+PURPOSE
+  Walks the station from rootOrd, finds every component that has any
+  of the slots listed in slotNames (default "set"; actions or
+  properties), reads the INSTANCE flags on each and reports them to
+  output slots and a CSV file. One row per component per slot found.
+
+  Instance flags  = component.getFlags(slot)
+  Default flags   = slot.getDefaultFlags()
+  Modified        = the two differ
+
+  Run it with the Program Object's built-in Execute action.
+  Leave "Execute On Change" OFF, otherwise editing any config slot
+  re-runs a full scan.
+
+
+---------------------------------------------------------------------
+ IMPORTS  (add these in the Program Object editor)
+---------------------------------------------------------------------
+ Enter the PACKAGE NAME ONLY. The editor appends ".*" itself;
+ typing "javax.baja.naming.*" produces "javax.baja.naming.*.*" and
+ fails with "';' expected".
+
+  javax.baja.sys          Flags, Slot, BComponent, BInteger, BString
+  javax.baja.naming       BOrd, SlotPath
+  java.util               ArrayList, HashSet
+
+ File, reflection and date classes are fully qualified in the code;
+ javax.baja.file, javax.baja.tag and java.io are no longer needed.
+
+
+ v1.03: no slot or import changes - search code now shared (Common
+        search tier); error text says "Root Location or BQL".
+ v1.02: no slot or import changes - the program sorts its own property
+        sheet on start (copies and upgraded objects sort themselves).
+ v1.01: added the two slots maxArchives and logFilePath (marked NEW below).
+ Imports are unchanged.
+
+---------------------------------------------------------------------
+ SLOTS  (order, display names and facets as on the station slot sheet)
+---------------------------------------------------------------------
+ Name          Display Name                  Type          Flags  Facets
+ ------------  ----------------------------  ------------  -----  -----------------------------
+ quickGuide    quickGuide                    baja:String   r      fieldWidth=120, multiLine=true
+ rootOrd       Root Location or BQL          baja:Ord
+ slotNames     Slot Name(s)                  baja:String
+ nameFilter    Filter by Name (Blank = All)  baja:String
+ requireFlags  Flag required (Blank = All)   baja:String
+ maxResults    Max. Results                  baja:Integer
+ results       Results                       baja:String   r      multiLine=true, fieldWidth=120
+ summary       Summary                       baja:String   r      fieldWidth=120
+ status        Status                        baja:String   r      fieldWidth=120
+ lastRun       LastRun                       baja:String   r      fieldWidth=20
+ scanned       Slots Scanned                 baja:Integer  r      fieldWidth=10
+ matched       Slots Matched                 baja:Integer  r      fieldWidth=10
+ modified      Previously Modified Slots     baja:Integer  r      fieldWidth=10
+ csvFile       Output CSV file               baja:Ord
+ maxArchives   Max Archives                  baja:Integer         min=0, fieldWidth=5     NEW
+ logFilePath   Log File                      baja:Ord                                     NEW
+ includeDetail Include Modified Details      baja:Boolean         trueText=Show Modified Details,
+                                                                  falseText=Show Simple Details
+ version       Version                       baja:String   rs     fieldWidth=10
+
+ Defaults
+   rootOrd       station:|slot:/Drivers
+   slotNames     set
+   maxResults    0
+   csvFile       file:^Flags.csv
+   includeDetail false
+   maxArchives   10   (CSV files kept when csvFile is a folder, and
+                      log archives kept; 0 = keep all)
+   logFilePath   blank = file:^logs/SetFlagAudit.log (one log per run)
+
+ Run with the built-in Execute action (Execute On Change OFF).
+
+
+---------------------------------------------------------------------
+ SLOT NOTES
+---------------------------------------------------------------------
+ rootOrd       Component  -> walks its whole subtree.
+                 station:|slot:/Drivers/BacnetNetwork
+               BQL / NEQL -> every row is walked as its own root. Rows
+               can be the points themselves or the folders holding them.
+               A component reached from two rows is counted once.
+                 station:|slot:/Drivers|bql:select * from control:ControlPoint where name like '*Flow_SP'
+                 station:|slot:/Drivers|bql:select * from baja:Folder where name like 'VAV_1*'
+
+ slotNames     Comma/space-separated slot names to inspect. Actions or
+               properties both work.
+                 set
+                 set, fallback
+                 set, emergencyOverride, override, auto, fallback
+               Blank = set.
+
+ nameFilter    Case-insensitive "contains" match on the display name
+               (unescaped). Blank = no name filter.
+
+ requireFlags  Comma/space list of flag names; ALL must be set to match.
+               Blank = report every point with the action.
+               Valid names (case-insensitive):
+                 readonly, transient, hidden, summary, async, noRun,
+                 defaultOnClone, confirmRequired, operator,
+                 noAudit, composite, removeOnClone,
+                 metadata, linkTarget, nonCritical,
+                 userDefined1, userDefined2, userDefined3, userDefined4
+               e.g. "operator"  or  "operator, confirmRequired"
+
+ maxResults    Caps CSV rows and results lines. Counts in the output
+               slots stay accurate. 0 = unlimited CSV, 200 results lines.
+
+ csvFile       File or directory under the station home.
+               File       file:^reports/setFlagAudit.csv
+                          overwritten every run
+               Directory  file:^reports   (or ending in /)
+                          new SetFlagAudit_yyyy-MM-dd_HH-mm-ss.csv per run
+               A path whose last part has no extension is treated as a
+               directory. Missing folders are created.
+               Null / blank = no CSV written.
+               Paths outside the station home are refused (status says so).
+
+ includeDetail true = add Modified, DefaultFlags, Added, Removed columns
+               to the CSV. false = Name, Path, Slot, Flags only.
+
+
+---------------------------------------------------------------------
+ OUTPUTS
+---------------------------------------------------------------------
+ version       Program version, set on start and on each Execute
+ quickGuide    On-station help text, set on start and on each Execute
+               (open from the property sheet, multi-line)
+ status        OK / ERROR line with timestamp, scan count, match count,
+               ms, slots found, query row count (BQL), CSV file name
+ scanned       Components walked
+ matched       Slot rows that passed all filters (a point with both
+               set and fallback counts as 2)
+ modified      Matched rows whose flags differ from default
+ summary       Per-flag counts across matched points
+               e.g. "Slots Matched as per filters: 412 | Previously modified: 7 |
+                operator=405, hidden=7"
+ lastRun       Timestamp of last completed scan
+ results       One line per matched point with the flags set on its action:
+                 AHU1_SAT_SP.set : operator|summary
+                 AHU1_SAT_SP.fallback : operator
+                 VAV2_Flow_SP.set : operator|hidden   *MODIFIED +hidden
+               Open it from the property sheet (multi-line text).
+               transient = not saved to the bog.
+
+
+---------------------------------------------------------------------
+ CSV COLUMNS
+---------------------------------------------------------------------
+ Always:
+ Name          Display name
+ Path          Slot path (escaped, usable as an ORD)
+ Slot          Slot inspected (one of slotNames)
+ Flags         Instance flags, decoded (pipe-separated)
+
+ includeDetail = true adds:
+ Modified      Y / N  (instance flags differ from type default)
+ DefaultFlags  Type default flags, decoded
+ Added         Flags set on the instance but not in the default
+ Removed       Flags in the default but cleared on the instance
+
+
+---------------------------------------------------------------------
+ COMPILE NOTES
+---------------------------------------------------------------------
+ - Output slots (scanned/matched/modified/summary/lastRun/results) are
+   written by name at runtime, and version/quickGuide via reflection, so a missing
+   or misnamed output slot doesn't break the compile. Missing outputs
+   are listed in status as "MISSING SLOTS: ...". status itself still
+   uses setStatus().
+ - If the embedded compiler rejects a Flags constant (most likely
+   LINK_TARGET or NON_CRITICAL), delete that entry from BOTH
+   FLAG_NAMES and FLAG_VALUES at the same index.
+ - Scan runs on the execute thread. Keep rootOrd narrow on large
+   Supervisors.

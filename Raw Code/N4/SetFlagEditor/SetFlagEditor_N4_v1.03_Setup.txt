@@ -1,0 +1,211 @@
+=====================================================================
+ SetFlagEditor v1.03  -  Niagara 4.15.2 Program Object setup
+=====================================================================
+
+PURPOSE
+  Companion to SetFlagAudit. Same search (Root Location or BQL,
+  Slot Name(s), Filter by Name, Flag required), then adds, removes or
+  resets the instance flags on every matched slot.
+
+    new flags = (current | Flags to Add) & ~Flags to Remove
+    Reset to Default = back to the type default flags
+
+  The dryRun action previews every change and writes nothing.
+  Execute writes. Always Dry Run first.
+  Every matched slot is logged to the CSV with Before / After flags.
+  Each write is read back; a slot that doesn't take the change is
+  logged FAILED. Changes persist when the station is saved.
+  This program and everything inside it are never edited.
+
+  Leave Execute On Change OFF.
+  Undo the last live run with the reverse action.
+
+
+---------------------------------------------------------------------
+ IMPORTS  (package name only - the editor appends ".*")
+---------------------------------------------------------------------
+  javax.baja.sys
+  javax.baja.naming
+  java.util
+
+
+ v1.03: no slot or import changes - search code now shared (Common
+        search tier); error text says "Root Location or BQL".
+ v1.02: no slot or import changes - the program sorts its own property
+        sheet on start (copies and upgraded objects sort themselves).
+ v1.01: added the two slots maxArchives and logFilePath (marked NEW below).
+ Imports are unchanged.
+
+---------------------------------------------------------------------
+ SLOTS
+---------------------------------------------------------------------
+ Name            Display Name                  Type          Flags  Facets
+ --------------  ----------------------------  ------------  -----  -----------------------------
+ quickGuide      quickGuide                    baja:String   r      fieldWidth=120, multiLine=true
+ rootOrd         Root Location or BQL          baja:Ord
+ slotNames       Slot Name(s)                  baja:String
+ nameFilter      Filter by Name (Blank = All)  baja:String
+ requireFlags    Flag required (Blank = All)   baja:String
+ addFlags        Flags to Add                  baja:String
+ removeFlags     Flags to Remove               baja:String
+ resetToDefault  Reset to Default              baja:Boolean         trueText=Reset to Type Default,
+                                                                    falseText=Use Add / Remove
+ maxResults      Max. Results                  baja:Integer
+ results         Results                       baja:String   r      multiLine=true, fieldWidth=120
+ summary         Summary                       baja:String   r      fieldWidth=120
+ status          Status                        baja:String   r      fieldWidth=120
+ lastRun         LastRun                       baja:String   r      fieldWidth=20
+ scanned         Components Scanned            baja:Integer  r      fieldWidth=10
+ matched         Slots Matched                 baja:Integer  r      fieldWidth=10
+ changed         Slots Changed                 baja:Integer  r      fieldWidth=10
+ csvFile         Output CSV file               baja:Ord
+ maxArchives   Max Archives                  baja:Integer         min=0, fieldWidth=5     NEW
+ logFilePath   Log File                      baja:Ord                                     NEW
+ version         Version                       baja:String   rs     fieldWidth=10
+
+ Defaults
+   rootOrd         station:|slot:/Drivers
+   slotNames       set
+   resetToDefault  false
+   maxResults      0
+   csvFile         file:^FlagEdits.csv
+   maxArchives   10   (CSV files kept when csvFile is a folder, and
+                      log archives kept; 0 = keep all)
+   logFilePath   blank = file:^logs/SetFlagEditor.log (one log per run)
+
+ Generated getters used directly (must exist or the compile fails):
+   rootOrd, slotNames, nameFilter, requireFlags, addFlags, removeFlags,
+   resetToDefault, maxResults, csvFile, status
+ Written by name / reflection (missing = reported in Status, compile OK):
+   results, summary, lastRun, scanned, matched, changed, version,
+   quickGuide
+
+
+---------------------------------------------------------------------
+ ACTIONS
+---------------------------------------------------------------------
+ Name           Display Name     Argument  Return  Handler            Notes
+ -------------  ---------------  --------  ------  -----------------  ---------------------------
+ execute        Execute          (none)    void    onExecute()        built-in; LIVE edit
+ dryRun         Dry Run          (none)    void    onDryRun()         ADD; preview, writes nothing
+ reverse        Reverse          (none)    void    onReverse()        ADD; undo last live Execute
+
+
+---------------------------------------------------------------------
+ REVERSE
+---------------------------------------------------------------------
+ - Every LIVE Execute that changes at least one slot overwrites the
+   reverse manifest:
+     <station home>/logs/SetFlagEditor_<programName>_reverse.csv
+   Columns: Path, Slot, BeforeHex, AfterHex (exact flag bits).
+ - A live run that changes nothing keeps the previous manifest.
+   Dry Run never touches it.
+ - Reverse puts each slot back to BeforeHex, but only if its flags
+   still equal AfterHex. Anything edited since is SKIPPED.
+ - A live Reverse renames the manifest to
+     SetFlagEditor_<programName>_reversed_<timestamp>.csv
+   so it can't be applied twice. Reverse with no manifest does nothing.
+ - Only the LAST live run can be reversed. Older runs: use the Before
+   column of that run's CSV (directory mode keeps every run).
+ - Save the station after a live Reverse.
+ - Reverse CSV goes to Output CSV file; in directory mode it is named
+   SetFlagEditor_Reverse_<timestamp>.csv.
+ - Reverse results: REVERSED / SKIPPED / FAILED
+
+
+---------------------------------------------------------------------
+ SLOT NOTES
+---------------------------------------------------------------------
+ Root Location or BQL
+               Component  -> walks its whole subtree.
+                 station:|slot:/Drivers/BacnetNetwork
+               BQL / NEQL -> every row is walked as its own root.
+                 station:|slot:/Drivers|bql:select * from control:ControlPoint where name like '*Flow_SP'
+
+ Slot Name(s)  Comma list, actions or properties. Blank = set.
+                 set, fallback
+
+ Filter by Name
+               Component name contains (case-insensitive). Blank = all.
+
+ Flag required Only edit slots that currently have ALL of these flags.
+               Blank = all. e.g. "operator" to touch only slots that
+               already have operator.
+
+ Flags to Add / Flags to Remove
+               Comma list of flag names. A flag in both stops the run.
+               An unknown flag name (typo) stops the run.
+               Both blank and Reset to Default off = nothing to do, stops.
+
+ Reset to Default
+               Sets each matched slot back to its type default flags.
+               Flags to Add / Remove are ignored.
+
+ Max. Results  Caps CSV rows and Results lines only. Every matched
+               slot is still edited. 0 = no CSV cap, 200 Results lines.
+
+ Output CSV file
+               File       file:^reports/FlagEdits.csv  (overwritten)
+               Directory  file:^reports  (new SetFlagEditor_<ts>.csv)
+               Must be under the station home. Blank = no CSV.
+               Use a directory to keep a history of every run.
+
+ Valid flag names (case-insensitive):
+   readonly, transient, hidden, summary, async, noRun,
+   defaultOnClone, confirmRequired, operator, noAudit, composite,
+   removeOnClone, metadata, linkTarget, nonCritical,
+   userDefined1, userDefined2, userDefined3, userDefined4
+
+ CAUTION
+   transient on a property = value is NOT saved to the bog.
+   readonly blocks operator writes to that slot.
+   hidden removes it from the property sheet.
+   Test on one point (Filter by Name) before a wide run.
+
+
+---------------------------------------------------------------------
+ OUTPUTS
+---------------------------------------------------------------------
+ Results            Name.slot : before -> after  [result]
+                      VAV_101_Flow_SP.set : operator -> (none)  [CHANGED]
+                      VAV_101_Flow_SP.fallback : (none)  [NO CHANGE]
+ Summary            LIVE | Slots Matched as per filters: 60 |
+                    Changed: 15 | No change: 45 | Failed: 0
+                    (Dry Run shows "Would change" instead)
+ Status             timestamp, mode, counts, ms, CSV file,
+                    "SAVE THE STATION" after a live run with changes,
+                    MISSING SLOTS if an output slot is absent
+ LastRun            time of last completed run
+ Components Scanned components walked
+ Slots Matched      slot rows that passed the filters
+ Slots Changed      slots written (Dry Run action: slots that would be)
+
+ After Reverse:
+   Summary          REVERSE | Slots in manifest | Reversed |
+                    Skipped | Failed
+   Slots Matched    rows in the manifest
+   Slots Changed    slots reversed
+   Components Scanned  0 (no search on reverse)
+
+
+---------------------------------------------------------------------
+ CSV COLUMNS
+---------------------------------------------------------------------
+ Name     Display name
+ Path     Slot path (escaped, usable as an ORD)
+ Slot     Slot edited
+ Before   Flags before the run
+ After    Flags after the run (Dry Run action: what they would be)
+ Result   CHANGED / WOULD CHANGE / NO CHANGE / FAILED (reason)
+          Reverse: REVERSED / SKIPPED / FAILED (reason)
+
+ To undo a run by hand: the Before column has the original flags.
+
+
+---------------------------------------------------------------------
+ COMPILE NOTES
+---------------------------------------------------------------------
+ - Same Flags constant list as SetFlagAudit. If one is rejected,
+   delete it from BOTH FLAG_NAMES and FLAG_VALUES at the same index.
+ - Edits run on the execute thread. Keep Root Location narrow on
+   large Supervisors.
